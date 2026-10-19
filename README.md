@@ -1,4 +1,4 @@
-## baopeak fork: Vietnamese display and optional on-device search
+## baopeak fork: modern display, Vietnamese text and optional search
 
 This is **[baopeak/techo5](https://github.com/baopeak/techo5)**, based on
 **[asmsaifs/techo5](https://github.com/asmsaifs/techo5)**, which builds on the original
@@ -12,6 +12,10 @@ Their features and credits are retained below; the upstream release badge is not
 - **Listening lifecycle:** the indicator follows the actual Xiaozhi microphone stream, including
   follow-ups. Manual end-of-speech allows **1.2 seconds of quiet** between phrases.
   See [Xiaozhi setup](docs/xiaozhi.md).
+- **Modern native Show interface:** flatter Settings controls and refreshed daytime clock faces,
+  with paired **Light/Dark** themes. All twelve style IDs remain; clock taps and horizontal style
+  swipes are independent, so disabling tap-to-assist does not disable clock navigation.
+  See [screen settings](docs/setup.md#6-the-screen).
 - **Optional Exa MCP sidecar:** web search runs on the device, separately from `echod`, through
   Exa's official keyless MCP endpoint. No laptop, Exa API key or paid fallback is required;
   anonymous use is rate limited and the exact quota is unknown.
