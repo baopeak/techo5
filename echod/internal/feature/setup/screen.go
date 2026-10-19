@@ -112,10 +112,6 @@ func screenSection(w http.ResponseWriter, token string) {
 	fmt.Fprintf(w, `<p><label><input type="checkbox" name="swipe" value="yes" style="width:auto"%s> Swipe between clock
 	 styles: a swipe left or right across the clock turns to the next style or the one before</label></p>`, swipe)
 	if len(s.Taps) > 0 {
-		// Only where there is a Tap on the clock to set (the Show).
-		fmt.Fprint(w, `<p class="note">Off whenever Tap on the clock is Nothing, too.</p>`)
-	}
-	if len(s.Taps) > 0 {
 		fmt.Fprint(w, `<label for="clocktap">Tap on the clock</label><select id="clocktap" name="clocktap">`)
 		now := s.TapNow()
 		for i, l := range s.Taps {

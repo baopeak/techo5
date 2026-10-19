@@ -10,15 +10,12 @@ import (
 	"github.com/HuskerMinion/techo5/echod/internal/config"
 )
 
-// Swipe between clock styles: on by default; off, a swipe left or right across the clock does what it
-// did before the swipe was added (nothing, or put the now-playing page away). It is off, too, whenever
-// Tap on the clock is Nothing: a panel set up to be left alone is not to change its face under a hand
-// brushing past it.
+// Swipe between clock styles has its own switch, independent of the clock's
+// tap action. Disabling tap-to-assist must leave clock navigation available.
 
 // styleSwipeOn is whether a swipe across the clock turns its style now.
 func styleSwipeOn() bool {
-	s := config.Get().Screen
-	return !s.NoStyleSwipe && s.ClockTap != "nothing"
+	return !config.Get().Screen.NoStyleSwipe
 }
 
 // styleSwipeSwitch is the Home Assistant switch for the setting.

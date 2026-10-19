@@ -68,9 +68,6 @@ func (r *renderer) styledClock(s scene, style string) {
 	case glance:
 		bottom = r.h - r.s(50) - r.s(46) - r.s(16)
 	}
-	if style == styleGlow {
-		r.glowGround(s)
-	}
 	if timers {
 		r.timersLine(s, bottom-r.s(16))
 		bottom -= r.s(64)
@@ -86,16 +83,14 @@ func (r *renderer) styledClock(s scene, style string) {
 	case styleBig:
 		r.bigStyle(s, box)
 	case styleFlip:
-		r.ink = r.dayInk()
-		r.flipClock(s.now, image.Rect(box.Min.X, box.Min.Y, box.Max.X, box.Max.Y-r.s(56)))
+		r.modernFlipClock(s.now, image.Rect(box.Min.X, box.Min.Y, box.Max.X, box.Max.Y-r.s(64)))
 		r.styleDateUnder(s, box, box.Max.Y-r.s(8))
 	case styleLED:
 		r.ink = r.dayInk()
-		if r.cornered {
-			// Small, the unlit segments crowd the lit ones: fainter, so the time reads first.
-			r.ink.ghost = faded(r.ink.ghost, 96)
+		digits := image.Rect(box.Min.X+r.s(20), box.Min.Y+r.s(24), box.Max.X-r.s(20), box.Max.Y-r.s(84))
+		if s.slideshow == nil {
+			r.roundFill(digits.Inset(-r.s(16)), float64(r.s(24)), surface(1), surface(1))
 		}
-		digits := image.Rect(box.Min.X, box.Min.Y+r.s(16), box.Max.X, box.Max.Y-r.s(76))
 		r.ledClock(s.now, digits, r.ampm)
 		r.styleDateUnder(s, box, box.Max.Y-r.s(8))
 	case styleAnalog:
@@ -126,25 +121,111 @@ func (r *renderer) styledClock(s scene, style string) {
 	r.alertBadge(s)
 }
 
-// dayInk is the LED and flip clocks in the theme's colors: the accent lit, the ground's own shade for
-// the cards.
+// dayInk keeps the instrument's lit segments readable on both light and dark grounds.
 func (r *renderer) dayInk() clockInk {
 	return clockInk{
-		lit: amber, ghost: lerp(walnut, amber, 0.09),
-		cardTop: shift(walnut, 22), cardLower: shift(walnut, 15),
-		hinge: shift(walnut, 40), figure: cream, split: walnut,
+		lit: cream, ghost: lerp(surface(1), dim, 0.12),
+		cardTop: surface(1), cardLower: surface(2),
+		hinge: ember, figure: cream, split: ember,
 	}
 }
 
-// styleDateUnder is the date line centered under a style drawn in box (styleDateIn). In a corner the box is narrower than
-// a long date, with the next alarm after it, would be: there it is cut to the box, so it neither starts
-// off the screen's edge nor runs on over the middle.
-func (r *renderer) styleDateUnder(s scene, box image.Rectangle, baseline int) {
-	width := 0
-	if r.cornered {
-		width = box.Dx()
+// modernClassicTimeAndDateAt is the idle Classic composition. The screensaver keeps
+// its independent compact treatment in timeAndDateAt.
+func (r *renderer) modernClassicTimeAndDateAt(now time.Time, base int, suffix string, align, left int) image.Rectangle {
+	size, gap, dateGap := 196, r.s(18), r.s(64)
+	if align != 0 {
+		size, gap, dateGap = 88, r.s(10), r.s(46)
 	}
-	r.styleDateIn(r.small, s, box.Min.X+box.Dx()/2, baseline, 0, width)
+	hm, period := clockHM(now), clockSuffix(now)
+	tf, af := r.styleFace(false, size), r.ampm
+	if align != 0 {
+		af = r.small
+	}
+	aw := 0
+	if period != "" {
+		aw = gap + r.width(af, period)
+	}
+	room := r.w - 2*r.margin
+	if align != 0 {
+		room = r.w * cornerPct / 100
+	}
+	if tw := r.width(tf, hm); tw+aw > room {
+		tf = r.styleFace(false, max(16, size*max(1, room-aw)/tw))
+	}
+	across := func(w int) int {
+		if align < 0 {
+			return left
+		}
+		if align > 0 {
+			return r.w - r.margin - w
+		}
+		return (r.w - w) / 2
+	}
+	tw := r.width(tf, hm)
+	x := across(tw + aw)
+	r.text(tf, hm, x, base, cream)
+	if period != "" {
+		r.text(af, period, x+tw+gap, base, dateColor(dim))
+	}
+	date := locale.LongDate(now, screenLang()) + suffix
+	if r.width(r.small, date) > room {
+		date = r.clipTo(r.small, locale.ShortDate(now, screenLang())+suffix, room)
+	}
+	dw := r.width(r.small, date)
+	dx := across(dw)
+	r.text(r.small, date, dx, base+dateGap, dateColor(dim))
+	return image.Rect(dx, base+dateGap-r.s(30), dx+dw, base+dateGap+r.s(10))
+}
+
+// modernFlipClock uses quiet paired cards, without physical hinges, perspective
+// copies or extra animation frames. A hairline preserves the familiar split.
+func (r *renderer) modernFlipClock(now time.Time, box image.Rectangle) {
+	period := clockSuffix(now)
+	af := r.styleFace(true, 26)
+	aw := 0
+	if period != "" {
+		aw = r.width(af, period) + r.s(24)
+	}
+	gap, apart := r.s(10), r.s(34)
+	w := max(8, (box.Dx()-aw-2*gap-apart)/4)
+	h := max(8, min(box.Dy(), w*3/2))
+	w = min(w, h*4/5)
+	total := 4*w + 2*gap + apart + aw
+	x := box.Min.X + (box.Dx()-total)/2
+	top := box.Min.Y + (box.Dy()-h)/2
+	f := r.styleFace(true, 160)
+	scale := math.Min(float64(w-r.s(16))/float64(r.width(f, "8")), float64(h)*0.67/float64(capHeight(f)))
+	f = r.styleFace(true, max(12, int(160*scale)))
+	for i, digit := range clockDigits(now) {
+		card := image.Rect(x, top, x+w, top+h)
+		r.roundFill(card, float64(r.s(16)), surface(1), surface(1))
+		mid := top + h/2
+		r.fillRect(image.Rect(x+r.s(8), mid, x+w-r.s(8), mid+max(1, r.s(1))), ember)
+		if digit >= 0 {
+			text := [...]string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}[digit]
+			r.text(f, text, x+(w-r.width(f, text))/2, top+(h+capHeight(f))/2, cream)
+		}
+		x += w
+		switch i {
+		case 0, 2:
+			x += gap
+		case 1:
+			cx := float64(x + apart/2)
+			r.fxDisc(cx, float64(top+h*2/5), float64(max(2, r.s(3))), dim, 1)
+			r.fxDisc(cx, float64(top+h*3/5), float64(max(2, r.s(3))), dim, 1)
+			x += apart
+		}
+	}
+	if period != "" {
+		r.text(af, period, x+r.s(20), top+(h+capHeight(af))/2, dim)
+	}
+}
+
+// styleDateUnder keeps a centered localized date and next alarm inside the
+// instrument's own width, including compact corner placements.
+func (r *renderer) styleDateUnder(s scene, box image.Rectangle, baseline int) {
+	r.styleDateIn(r.small, s, box.Min.X+box.Dx()/2, baseline, 0, max(1, box.Dx()))
 }
 
 // styleDateIn is the date line, with the next alarm after it when it is within a day, at x (centered
@@ -183,17 +264,20 @@ func (r *renderer) bigStyle(s scene, box image.Rectangle) {
 	if ampm != "" {
 		aw = r.width(r.ampm, ampm) + r.s(16)
 	}
-	scale := math.Min(float64(box.Dx()-aw)*0.96/float64(r.width(f, hm)), float64(box.Dy())*0.9/float64(capHeight(f)))
+	scale := math.Min(float64(box.Dx()-aw)*0.94/float64(r.width(f, hm)), float64(max(1, box.Dy()-r.s(76)))*0.86/float64(capHeight(f)))
 	f = r.styleFace(true, int(ref*scale))
 	w, h := r.width(f, hm), capHeight(f)
 	x := box.Min.X + (box.Dx()-w-aw)/2
-	base := box.Min.Y + (box.Dy()+h)/2
+	base := box.Min.Y + (box.Dy()-r.s(68)+h)/2
 	r.text(f, hm, x, base, cream)
 	if ampm != "" {
 		r.text(r.ampm, ampm, x+w+r.s(16), base-h+capHeight(r.ampm), dateColor(amber))
 	}
 	// The whole time opens the calendar, as the date does under the classic face.
-	r.setDateAt(image.Rect(x, base-h, x+w+aw, base))
+	r.styleDateUnder(s, box, min(box.Max.Y-r.s(8), base+r.s(64)))
+	r.weatherMu.Lock()
+	r.dateAt = r.dateAt.Union(image.Rect(x, base-h, x+w+aw, base))
+	r.weatherMu.Unlock()
 }
 
 // analogStyle is a dial on the left, and the day, the date and the weather beside it.
@@ -206,12 +290,15 @@ func (r *renderer) analogStyle(s scene, box image.Rectangle) {
 	at := func(n int) int { return int(float64(n) * k) }
 	cx := float64(box.Min.X) + rad + float64(r.s(8))
 	cy := float64(box.Min.Y+box.Dy()/2) - float64(r.s(10))
+	if s.slideshow == nil {
+		r.fxDisc(cx, cy, rad+float64(r.s(16)), surface(1), 1)
+	}
 	r.dial(s.now, cx, cy, rad)
 
 	x := int(cx+rad) + r.s(at(64))
 	mid := box.Min.Y + box.Dy()/2
 	day := r.styleFace(true, at(56))
-	r.text(day, locale.Weekday(s.now, screenLang()), x, mid-r.s(at(44)), cream)
+	r.text(day, r.clipTo(day, locale.Weekday(s.now, screenLang()), max(1, box.Max.X-x)), x, mid-r.s(at(44)), cream)
 	df := r.styleFace(false, at(40))
 	date := r.clipTo(df, locale.MonthDay(s.now, screenLang())+alarmSuffix(s), box.Max.X-x)
 	r.text(df, date, x, mid+r.s(at(12)), dateColor(dim))
@@ -250,17 +337,17 @@ func (r *renderer) dial(now time.Time, cx, cy, rad float64) {
 	}
 	for i := range 60 {
 		long := i%5 == 0
-		in, w, c := rad*0.94, rad*0.012, lerp(walnut, cream, 0.35)
+		in, w, c := rad*0.965, rad*0.008, ember
 		if long {
-			in, w, c = rad*0.86, rad*0.024, cream
+			in, w, c = rad*0.9, rad*0.016, dim
 		}
 		x0, y0 := at(rad, float64(i*6))
 		x1, y1 := at(in, float64(i*6))
 		r.fxLine(x0, y0, x1, y1, max(w, 1.5), c, 1)
 	}
 	num := r.styleFace(false, int(rad*0.16*float64(drawnFor)/float64(r.w)))
-	for n, deg := range map[string]float64{"12": 0, "3": 90, "6": 180, "9": 270} {
-		x, y := at(rad*0.7, deg)
+	for i, n := range [...]string{"12", "3", "6", "9"} {
+		x, y := at(rad*0.73, float64(i*90))
 		w := r.width(num, n)
 		r.text(num, n, int(x)-w/2, int(y)+capHeight(num)/2, dim)
 	}
@@ -270,10 +357,10 @@ func (r *renderer) dial(now time.Time, cx, cy, rad float64) {
 		r.fxLine(x0, y0, x1, y1, w, c, 1)
 	}
 	h, m, sec := float64(now.Hour()%12), float64(now.Minute()), float64(now.Second())
-	hand((h+m/60)*30, rad*0.5, rad*0.08, rad*0.055, cream)
-	hand((m+sec/60)*6, rad*0.78, rad*0.08, rad*0.035, cream)
-	hand(sec*6, rad*0.84, rad*0.14, max(rad*0.012, 2), amber)
-	r.fxDisc(cx, cy, rad*0.045, amber, 1)
+	hand((h+m/60)*30, rad*0.49, rad*0.045, max(rad*0.046, 2), cream)
+	hand((m+sec/60)*6, rad*0.79, rad*0.045, max(rad*0.027, 2), cream)
+	hand(sec*6, rad*0.87, rad*0.12, max(rad*0.008, 1), amber)
+	r.fxDisc(cx, cy, rad*0.035, amber, 1)
 	r.over.note(image.Rect(int(cx-rad), int(cy-rad), int(cx+rad), int(cy+rad)))
 }
 
@@ -301,15 +388,15 @@ func (r *renderer) wordsStyle(s scene, box image.Rectangle) {
 	}
 	small := r.styleFace(false, least(44, 32))
 	y := box.Min.Y + r.s(at(44))
-	r.text(small, "it's", x, y, dim)
+	r.text(small, clockText(s.now), x, y, dim)
 	if lead != "" {
 		f := fit(true, at(104), lead, room)
 		y += capHeight(f) + r.s(at(34))
 		r.text(f, lead, x, y, cream)
 	}
-	hf := fit(true, at(124), hour, room*3/5)
-	y += capHeight(hf) + r.s(at(34))
-	r.text(hf, hour, x, y, dateColor(amber))
+	hf := fit(true, at(112), hour, room*3/5)
+	y += capHeight(hf) + r.s(at(28))
+	r.text(hf, hour, x, y, cream)
 	if period != "" {
 		pf := fit(false, least(44, 32), period, room-r.width(hf, hour)-r.s(36))
 		r.text(pf, period, x+r.width(hf, hour)+r.s(30), y, dim)
@@ -339,19 +426,19 @@ func (r *renderer) sunStyle(s scene, box image.Rectangle) bool {
 	for i := 1; i <= steps; i++ {
 		fi := float64(i) / steps
 		x, y := at(fi)
-		c, w := lerp(walnut, amber, 0.35), float64(r.s(4))
+		c, w := ember, float64(max(1, r.s(2)))
 		if fi <= f {
-			c, w = amber, float64(r.s(6))
+			c, w = amber, float64(max(2, r.s(3)))
 		}
 		r.fxLine(px, py, x, y, w, c, 1)
 		px, py = x, y
 	}
-	r.fxLine(float64(box.Min.X), horizon, float64(box.Max.X), horizon, float64(r.s(3)), ember, 1)
+	r.fxLine(float64(box.Min.X), horizon, float64(box.Max.X), horizon, float64(max(1, r.s(1))), ember, 1)
 	switch {
 	case f >= 0 && f <= 1:
 		sx, sy := at(f)
-		r.fxDisc(sx, sy, float64(r.s(26)), lerp(amber, cream, 0.4), 0.45)
-		r.fxDisc(sx, sy, float64(r.s(18)), color.RGBA{255, 226, 150, 255}, 1)
+		r.fxDisc(sx, sy, float64(r.s(20)), surface(2), 1)
+		r.fxDisc(sx, sy, float64(r.s(12)), amber, 1)
 	case f < 0:
 		r.fxDisc(x0, horizon, float64(r.s(10)), lerp(walnut, amber, 0.5), 1)
 	default:
@@ -414,7 +501,7 @@ func sunWords(now, rise, set time.Time) string {
 // the foot.
 func (r *renderer) dashboardStyle(s scene, box image.Rectangle) {
 	hm, ampm := clockHM(s.now), clockSuffix(s.now)
-	tf := r.styleFace(true, 132)
+	tf := r.styleFace(true, 124)
 	top := box.Min.Y - r.s(40) // the weather corner is not drawn: the top is the time's
 	base := top + capHeight(tf) + r.s(8)
 	r.text(tf, hm, box.Min.X, base, cream)
@@ -467,7 +554,7 @@ func (r *renderer) dashboardStyle(s scene, box image.Rectangle) {
 		}
 	}
 	r.styleDateIn(r.small, s, box.Min.X, base+r.s(50), -1, col-r.s(50)-box.Min.X)
-	r.text(r.styleFace(true, 20), locale.Upcoming(screenLang()), col, top+r.s(20), dim)
+	r.text(r.styleFace(true, 24), locale.Upcoming(screenLang()), col, top+r.s(20), dim)
 	y := top + r.s(62)
 	if len(s.style.next) == 0 {
 		r.text(r.tiny, locale.NothingSoon(screenLang()), col, y, dim)
@@ -524,7 +611,7 @@ func (r *renderer) dashboardStyle(s scene, box image.Rectangle) {
 	if showRow {
 		divEnd = max(divEnd, evEnd)
 	}
-	r.fxLine(float64(col-r.s(30)), float64(top+r.s(4)), float64(col-r.s(30)), float64(divEnd), float64(r.s(2)), ember, 1)
+	r.fxLine(float64(col-r.s(30)), float64(top+r.s(4)), float64(col-r.s(30)), float64(divEnd), float64(max(1, r.s(1))), ember, 1)
 	// A tap on the column, its heading to its last line, opens the agenda.
 	r.setNextAt(image.Rect(col-r.s(20), top-r.s(10), r.w-r.margin, max(y-r.s(30), top+r.s(76))+r.s(10)))
 
@@ -551,6 +638,9 @@ func (r *renderer) dashboardStyle(s scene, box image.Rectangle) {
 	cw := (right - left) / len(days)
 	for i, d := range days {
 		cx := left + cw*i + cw/2
+		if s.slideshow == nil {
+			r.roundFill(image.Rect(left+cw*i+r.s(4), row+r.s(4), left+cw*(i+1)-r.s(4), row+rowH), float64(r.s(18)), surface(1), surface(1))
+		}
 		name := locale.ShortWeekday(d.When, screenLang())
 		if i == 0 {
 			name = locale.Today(screenLang())

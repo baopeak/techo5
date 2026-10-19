@@ -4,7 +4,6 @@ package display
 
 import (
 	"image"
-	"image/color"
 	"math"
 	"slices"
 	"strings"
@@ -25,11 +24,11 @@ func (r *renderer) binaryStyle(s scene, box image.Rectangle) {
 	foot := r.s(100) // the time and the date under the lights
 	room := box.Dy() - foot
 	pitch := math.Min(float64(room)/4, float64(box.Dx())/7.6)
-	rad := pitch * 0.36
+	rad := pitch * 0.26
 	gap := pitch * 0.8 // between the hours, the minutes and the seconds
 	x := float64(box.Min.X) + (float64(box.Dx())-(6*pitch+2*gap))/2 + pitch/2
 	bottom := float64(box.Min.Y+room) - pitch/2
-	ghost := lerp(walnut, amber, 0.13)
+	ghost := surface(2)
 	for i, d := range digits {
 		for bit := range binaryBits[i] {
 			c := ghost
@@ -43,7 +42,7 @@ func (r *renderer) binaryStyle(s scene, box image.Rectangle) {
 			x += gap
 		}
 	}
-	tf := r.styleFace(true, 40)
+	tf := r.styleFace(false, 48)
 	t := clockHM(s.now) + s.now.Format(":05")
 	if suffix := clockSuffix(s.now); suffix != "" {
 		t += " " + suffix
@@ -60,14 +59,21 @@ func (r *renderer) worldStyle(s scene, box image.Rectangle) {
 		at        time.Time
 		here      bool
 	}
-	rows := []row{{name: locale.Here(screenLang()), at: s.now, here: true}}
+	var storage [maxWorld + 1]row
+	storage[0] = row{name: locale.Here(screenLang()), at: s.now, here: true}
+	count := 1
 	for _, p := range s.style.places {
-		rows = append(rows, row{name: p.name, day: placeDay(s.now, p.loc), at: s.now.In(p.loc)})
+		if count == len(storage) {
+			break
+		}
+		storage[count] = row{name: p.name, day: placeDay(s.now, p.loc), at: s.now.In(p.loc)}
+		count++
 	}
+	rows := storage[:count]
 	h := box.Dy() / len(rows)
 	hd := h * 100 / r.s(100) // the row's height, in the units faces are sized in
 	size := min(84, hd*62/100)
-	tf := r.styleFace(true, size)
+	tf := r.styleFace(false, size)
 	af := r.styleFace(true, max(16, size*2/3)) // AM and PM, in step with the time
 	nf := r.styleFace(true, min(40, size/2+6))
 	sf := r.styleFace(false, min(28, max(22, hd*30/100)))
@@ -79,8 +85,8 @@ func (r *renderer) worldStyle(s scene, box image.Rectangle) {
 	for i, w := range rows {
 		top := box.Min.Y + i*h
 		base := top + (h+capHeight(tf))/2
-		if i > 0 {
-			r.fxLine(float64(box.Min.X), float64(top), float64(box.Max.X), float64(top), float64(r.s(2)), ember, 1)
+		if s.slideshow == nil {
+			r.roundFill(image.Rect(box.Min.X-r.s(12), top+r.s(4), box.Max.X+r.s(12), top+h-r.s(4)), float64(r.s(18)), surface(1), surface(1))
 		}
 		t, suffix := clockHM(w.at), clockSuffix(w.at)
 		sw := 0
@@ -93,9 +99,6 @@ func (r *renderer) worldStyle(s scene, box image.Rectangle) {
 			r.text(af, suffix, box.Max.X-sw+r.s(10), base, dateColor(amber))
 		}
 		nc := cream
-		if w.here {
-			nc = amber
-		}
 		room := tx - box.Min.X - r.s(24)
 		day := w.day
 		if w.here {
@@ -127,9 +130,9 @@ func (r *renderer) worldStyle(s scene, box image.Rectangle) {
 func (r *renderer) agendaStyle(s scene, box image.Rectangle) {
 	col := box.Min.X + box.Dx()*42/100
 	hm := clockHM(s.now)
-	tf := r.styleFace(true, 112)
+	tf := r.styleFace(false, 112)
 	if tw := r.width(tf, hm); tw > col-box.Min.X-r.s(40) {
-		tf = r.styleFace(true, 112*(col-box.Min.X-r.s(40))/tw)
+		tf = r.styleFace(false, 112*(col-box.Min.X-r.s(40))/tw)
 	}
 	base := box.Min.Y + r.s(20) + capHeight(tf)
 	r.text(tf, hm, box.Min.X, base, cream)
@@ -137,7 +140,7 @@ func (r *renderer) agendaStyle(s scene, box image.Rectangle) {
 		r.text(r.ampm, suffix, box.Min.X, base+r.s(48), dateColor(amber))
 		base += r.s(48)
 	}
-	day := r.styleFace(true, 34)
+	day := r.styleFace(true, 32)
 	left := col - r.s(30) - box.Min.X
 	r.text(day, r.clipTo(day, locale.Weekday(s.now, screenLang()), left), box.Min.X, base+r.s(64), cream)
 	date := locale.MonthDay(s.now, screenLang())
@@ -147,11 +150,11 @@ func (r *renderer) agendaStyle(s scene, box image.Rectangle) {
 		r.text(r.tiny, r.clipTo(r.tiny, strings.TrimPrefix(a, "  ·  "), left), box.Min.X, base+r.s(150), amber)
 	}
 
-	r.fxLine(float64(col-r.s(20)), float64(box.Min.Y), float64(col-r.s(20)), float64(box.Max.Y), float64(r.s(2)), ember, 1)
-	head := r.styleFace(true, 20)
+	r.fxLine(float64(col-r.s(24)), float64(box.Min.Y), float64(col-r.s(24)), float64(box.Max.Y), float64(max(1, r.s(1))), ember, 1)
+	head := r.styleFace(true, 24)
 	y := box.Min.Y + r.s(28)
 	lang := screenLang()
-	r.text(head, strings.ToUpper(locale.Today(lang)), col, y, dim)
+	r.text(head, locale.Today(lang), col, y, dim)
 	y += r.s(48)
 	if len(s.style.next) == 0 {
 		r.text(r.small, locale.NothingOn(lang), col, y, dim)
@@ -178,7 +181,7 @@ func (r *renderer) agendaStyle(s scene, box image.Rectangle) {
 				return
 			}
 			y += r.s(10)
-			r.text(head, r.clipTo(head, strings.ToUpper(heads[i]), box.Max.X-col), col, y, dim)
+			r.text(head, r.clipTo(head, heads[i], box.Max.X-col), col, y, dim)
 			y += r.s(46)
 		}
 		if y > box.Max.Y {
@@ -191,9 +194,10 @@ func (r *renderer) agendaStyle(s scene, box image.Rectangle) {
 		case !e.AllDay:
 			when = clockText(e.Start)
 		}
-		r.text(r.tiny, when, col, y, amber)
+		r.fillRect(image.Rect(col, y-r.s(23), col+max(2, r.s(3)), y+r.s(6)), amber)
+		r.text(r.tiny, when, col+r.s(14), y, dim)
 		r.text(r.small, r.clipTo(r.small, e.Summary, box.Max.X-tx), tx, y, cream)
-		y += r.s(48)
+		y += r.s(52)
 	}
 }
 
@@ -220,22 +224,24 @@ func agendaHeads(events []hass.Event, now time.Time, lang string) []string {
 	return heads
 }
 
-// glowStyle is the time over colors drifting slowly across the screen, like a lava lamp; glowGround
-// has drawn the colors by then.
+// glowStyle is a softly framed digital instrument, not an animated light effect.
+// Its restrained tonal field remains quiet behind timers, weather and overlays.
 func (r *renderer) glowStyle(s scene, box image.Rectangle) {
-	r.bigStyle(s, image.Rect(box.Min.X, box.Min.Y+r.s(24), box.Max.X, box.Max.Y-r.s(60)))
-	r.styleDateUnder(s, box, box.Max.Y-r.s(8))
-}
-
-// glowGround is the Glow style's colors over the whole screen, drawn first so that everything else on
-// the clock page (the timers, the weather, the strips) is drawn over them. Over a photo there are
-// none: the photo is what is behind the clock then.
-func (r *renderer) glowGround(s scene) {
-	if s.slideshow != nil {
-		return
+	panel := box.Inset(r.s(12))
+	if s.slideshow == nil {
+		r.roundFill(panel, float64(r.s(36)), surface(1), surface(1))
 	}
-	field := r.glow.glowField(r.w/glowCell+1, r.h/glowCell+1, s.now, walnut, [3]color.RGBA{amber, ember, lerp(dim, amber, 0.3)})
-	r.glow.stretch(r.dst, field, nil)
+	hm, period := clockHM(s.now), clockSuffix(s.now)
+	f := r.styleFace(false, 240)
+	available := max(1, panel.Dx()-r.s(64))
+	scale := math.Min(float64(available)/float64(r.width(f, hm)), float64(max(1, panel.Dy()-r.s(100)))*0.75/float64(capHeight(f)))
+	f = r.styleFace(false, max(20, int(240*scale)))
+	base := panel.Min.Y + (panel.Dy()-r.s(70)+capHeight(f))/2
+	r.text(f, hm, panel.Min.X+(panel.Dx()-r.width(f, hm))/2, base, cream)
+	if period != "" {
+		r.text(r.tiny, period, panel.Min.X+(panel.Dx()-r.width(r.tiny, period))/2, base+r.s(30), dim)
+	}
+	r.styleDateUnder(s, panel, panel.Max.Y-r.s(20))
 }
 
 // styleNameTag is the name of the style a swipe turned to, in the middle of the clock for a moment.
@@ -249,6 +255,6 @@ func (r *renderer) styleNameTag(s scene) {
 	pad := r.s(22)
 	hgt := capHeight(f) + 2*r.s(18)
 	b := image.Rect((r.w-w)/2-pad, (r.h-hgt)/2, (r.w+w)/2+pad, (r.h+hgt)/2)
-	r.roundRect(b, b.Dy()/2, shift(walnut, 34))
+	r.roundFill(b, float64(r.s(16)), surface(3), surface(3))
 	r.text(f, name, (r.w-w)/2, b.Max.Y-r.s(18), cream)
 }

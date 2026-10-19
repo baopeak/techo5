@@ -328,7 +328,9 @@ the Spot too, in its settings.
   (the time in words), *Sun* (the sun's path from sunrise to sunset), *Dashboard* (the next events
   and the week's weather), *Binary* (the time in lights, one column per digit, counted 1, 2, 4, 8
   from the bottom), *World* (the time here and in other places), *Agenda* (the coming week's
-  events beside the time, each day under its heading) and *Glow* (soft colors drifting behind the time). Swipe left or right
+  events beside the time, each day under its heading) and *Glow* (a quiet tonal digital face on the
+  Show; drifting colors on the Spot). The Show's daytime faces use a restrained modern layout;
+  Flip uses flat split cards rather than animated hinges. Swipe left or right
   across the clock for the next style or the one before; its name shows for a moment, and a swipe
   the other way puts the last style back. The night clock keeps its own look. Also in Home Assistant
   and on the setup page's Screen & Photos tab.
@@ -343,12 +345,17 @@ the Spot too, in its settings.
   with combining accents is normalized before measuring and drawing, so it occupies the same space
   as the equivalent precomposed letters. No font download or Home Assistant connection is needed.
 - **Swipe between clock styles**: on by default. Turn it off (setup page, Screen & Photos, or the
-  switch in Home Assistant) so a swipe across the clock leaves its style alone. It's off whenever
-  **Tap on the clock** is *Nothing*, too.
+  switch in Home Assistant) so a swipe across the clock leaves its style alone. This setting is
+  independent of **Tap on the clock**: choosing *Nothing* for taps does not disable swiping.
 - **World clock places** (setup page, Screen & Photos tab): the World style's places, as time zone
   names with commas between them, like `America/Chicago, Europe/Paris, Asia/Tokyo`. Up to three; the
   Spot shows the first two. Leave it empty for New York, London and Tokyo.
-- **Theme**, **Answer time** and **Now playing** (the full page, or a strip over the clock).
+- **Theme**: *Light* and *Dark* provide paired, high-contrast neutral surfaces with a teal accent.
+  On the Show, the same palette covers settings, controls and every daytime clock face. Existing
+  themes and custom colors remain available; choosing a new theme does not reset other settings.
+  The settings categories, scrollable rows, choice lists and editors keep their existing actions
+  with a flatter layout and larger, consistently scaled controls.
+- **Answer time** and **Now playing** (the full page, or a strip over the clock).
 - **Tap on the clock** (Show): *Assist*, as it always was, *Dashboard* to open the dashboard, *Deck*
   to open TECHO5 Deck (until a deck has buttons, a tap still starts Assist), or *Nothing*, for a panel
   you only talk to. A voice request under way still

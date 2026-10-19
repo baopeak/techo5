@@ -269,9 +269,6 @@ type scene struct {
 // building a face at each size is not something to do per frame.
 type renderer struct {
 	paint // the canvas, its size, and the settings screen's tap zones
-	// glow is the Glow style's images, kept between frames (glow.go).
-	glow glowBuffers
-
 	// flip is the flip clock's cards, at night or as a day style: what they show, and a flip under
 	// way; ink is what the LED and flip clocks are drawn in for the frame in hand.
 	flip flipState
@@ -801,7 +798,7 @@ func (r *renderer) bigClock(s scene) {
 	if s.callButton && foot && align < 0 {
 		left = r.callButtonRect().Max.X + r.s(24)
 	}
-	r.setDateAt(r.timeAndDateAt(s.now, base, suffix, align, left).Inset(-r.s(16)))
+	r.setDateAt(r.modernClassicTimeAndDateAt(s.now, base, suffix, align, left).Inset(-r.s(16)))
 	if timers {
 		r.timersLine(s, base+timersAt)
 	}

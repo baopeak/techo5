@@ -20,10 +20,12 @@ func TestColorsFromSettingsAreColorsOrNothing(t *testing.T) {
 }
 
 func TestLightThemesAreKnownToBeLight(t *testing.T) {
-	for _, p := range Presets {
-		want := p.Name == "Paper" || p.Name == "Linen"
-		if p.Light() != want {
-			t.Errorf("%s: Light() = %v", p.Name, p.Light())
+	for _, tc := range []struct {
+		name  string
+		light bool
+	}{{"Paper", true}, {"Linen", true}, {"Light", true}, {"Dark", false}} {
+		if Named(tc.name).Light() != tc.light {
+			t.Errorf("%s was classified into the wrong light/dark family", tc.name)
 		}
 	}
 	if Named("nope").Name != Presets[0].Name {

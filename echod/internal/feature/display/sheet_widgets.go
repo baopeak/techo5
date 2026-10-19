@@ -6,7 +6,6 @@ import (
 	"image"
 	"image/color"
 	"math"
-	"slices"
 	"strings"
 	"sync"
 
@@ -16,10 +15,8 @@ import (
 	"golang.org/x/image/math/fixed"
 )
 
-// The settings screen's parts, shared by the Show and the Spot: its categories, rows and their
-// controls, lists of choices, scrolling, the zones taps are matched to, and the anti-aliased shapes
-// they are drawn from. Every shape is a rounded rectangle, circle or stroke with soft shadows,
-// drawn from the five palette colors, so it follows whichever theme is in force.
+// Native settings primitives shared by the Show and Spot. Flat tonal surfaces,
+// restrained outlines and theme-role colors keep controls readable in every palette.
 
 // The palette the settings screen draws with: the ground, the accent, text, dim text and rules. The
 // Show sets them from its theme (applyTheme); the Spot from its own colors.
@@ -79,6 +76,9 @@ type paint struct {
 	// piece of text. Zero means 1:1, so a paint that never sets these behaves exactly as before.
 	sNum, sDen int
 
+	// Reuse the modal clipping snapshot rather than allocate a screen each frame.
+	pickerUnder []uint8
+
 	// over is drawing words over a photo (readable.go).
 	over overPhoto
 }
@@ -104,8 +104,18 @@ func (p *paint) navGap() int      { return p.s(navGapBase) }
 func (p *paint) cardIn() int      { return p.s(cardInBase) }
 func (p *paint) cardRad() float64 { return float64(p.s(cardRadBase)) }
 func (p *paint) headerH() int     { return p.s(headerHBase) }
-func (p *paint) rowH() int        { return p.s(rowHBase) }
-func (p *paint) rowIn() int       { return p.s(rowInBase) }
+func (p *paint) rowH() int {
+	if p.round {
+		return p.s(60)
+	}
+	return p.s(rowHBase)
+}
+func (p *paint) rowIn() int {
+	if p.round {
+		return p.s(30)
+	}
+	return p.s(rowInBase)
+}
 
 // rowHeight is how tall row is drawn: a heading is shorter than a row with something on it.
 func (p *paint) rowHeight(row settingRow) int {
@@ -207,10 +217,8 @@ func dark() bool {
 	return int(walnut.R)+int(walnut.G)+int(walnut.B) < 384
 }
 
-// The settings screen regrouped by category: a rail of categories on the left with the chosen one
-// raised out of it, and that category's settings on a card floating over the ground. Every shape is
-// an anti-aliased rounded rectangle, circle or stroke with soft shadows, drawn from the theme's five
-// colors, so it follows whichever theme is chosen.
+// Settings categories and controls share the same hierarchy and theme roles on
+// both native renderers.
 
 type category int
 
@@ -345,16 +353,16 @@ func (r *paint) addZone(z zone) { r.pending = append(r.pending, z) }
 // layout was drawn on. Read them through the methods below, which scale them to the screen in
 // hand; nothing should use a Base value directly.
 const (
-	railWBase   = 244
-	navTopBase  = 20
-	navHBase    = 54
-	navGapBase  = 8
-	cardInBase  = 14 // the card's margin from the screen's edges
-	cardRadBase = 22
-	headerHBase = 82
-	rowHBase    = 60
-	headHBase   = 44 // a ctlHeading row
-	rowInBase   = 30 // text inset inside the card
+	railWBase   = 220
+	navTopBase  = 62
+	navHBase    = 48
+	navGapBase  = 6
+	cardInBase  = 16
+	cardRadBase = 16
+	headerHBase = 94
+	rowHBase    = 72
+	headHBase   = 44
+	rowInBase   = 26
 )
 
 // sheetFaces are the settings screen's own sizes of the font the rest of the screen uses.
@@ -366,8 +374,8 @@ type sheetFaces struct{ header, label, labelBold, sub, value, nav, navBold, butt
 func sheetFacesAt(name string, s func(int) int) sheetFaces {
 	f := func(bold bool, size int) font.Face { return fontFace(name, bold, float64(s(size))) }
 	return sheetFaces{
-		header: f(true, 36), label: f(false, 29), labelBold: f(true, 29), sub: f(false, 21),
-		value: f(false, 25), nav: f(false, 24), navBold: f(true, 24), button: f(true, 23),
+		header: f(true, 32), label: f(false, 26), labelBold: f(true, 26), sub: f(false, 18),
+		value: f(false, 23), nav: f(false, 22), navBold: f(true, 22), button: f(true, 21),
 	}
 }
 
@@ -399,7 +407,7 @@ func (r *paint) scrollLimits() (card, pick int) {
 // rowList draws rows down list, inside card, scrolled up by scroll pixels, and returns how far they
 // can scroll. Rows are drawn whole, then what lies above and below the list inside the card's width
 // is put back from under (the frame as it was before the rows), which clips them without clipping
-// every primitive; bg is the card's color at the list's edges, for the fades.
+// every primitive; bg is the flat card color behind its position indicator.
 func (r *paint) rowList(card, list image.Rectangle, rows []settingRow, scroll int, bg color.RGBA, under []uint8) int {
 	maxScroll := max(r.rowsHeight(rows)-list.Dy(), 0)
 	scroll = min(max(scroll, 0), maxScroll)
@@ -445,20 +453,17 @@ func (r *paint) restore(under []uint8, b image.Rectangle) {
 	}
 }
 
-// scrollHints fades a scrolled list into its edges where there is more, and draws a thin bar where
-// the view sits in the whole.
+// scrollHints marks continuation with hairlines and a quiet position indicator,
+// without washing out the first and last visible rows.
 func (r *paint) scrollHints(list image.Rectangle, scroll, maxScroll int, bg color.RGBA) {
-	const fade = 26
-	for i := range fade {
-		a := 1 - float64(i)/fade
-		for x := list.Min.X + 8; x < list.Max.X-8; x++ {
-			if scroll > 0 {
-				r.blendAt(x, list.Min.Y+i, bg, a*0.9)
-			}
-			if scroll < maxScroll {
-				r.blendAt(x, list.Max.Y-1-i, bg, a*0.9)
-			}
-		}
+	if maxScroll <= 0 || list.Empty() {
+		return
+	}
+	if scroll > 0 {
+		r.rule(list.Min.X+r.s(12), list.Max.X-r.s(12), list.Min.Y, 0.5)
+	}
+	if scroll < maxScroll {
+		r.rule(list.Min.X+r.s(12), list.Max.X-r.s(12), list.Max.Y-1, 0.5)
 	}
 	total := float64(list.Dy() + maxScroll)
 	if r.round {
@@ -473,10 +478,11 @@ func (r *paint) scrollHints(list image.Rectangle, scroll, maxScroll int, bg colo
 		r.aaRing(cx, cy, rad, 3, at, at+thumb, lerp(dim, cream, 0.3))
 		return
 	}
-	h := max(float64(list.Dy())*float64(list.Dy())/total, 30)
-	y0 := float64(list.Min.Y+4) + (float64(list.Dy()-8)-h)*float64(scroll)/float64(maxScroll)
-	x := float64(list.Max.X - 10)
-	r.aaLine(x, y0+2, x, y0+h-2, 4, lerp(dim, cream, 0.2))
+	h := max(float64(list.Dy())*float64(list.Dy())/total, r.sf(30))
+	y0 := float64(list.Min.Y+r.s(4)) + (float64(list.Dy()-r.s(8))-h)*float64(scroll)/float64(maxScroll)
+	x := float64(list.Max.X - r.s(7))
+	r.aaLine(x, float64(list.Min.Y+r.s(4)), x, float64(list.Max.Y-r.s(4)), r.sf(2), lerp(bg, ember, 0.5))
+	r.aaLine(x, y0+r.sf(2), x, y0+h-r.sf(2), r.sf(3), dim)
 }
 
 // pickRows is how many choices a long list shows at once, and pickScrollOver how many choices make
@@ -492,10 +498,13 @@ const (
 func (r *paint) picker(p pickerView, scroll int) int {
 	fc := r.faces()
 	r.addZone(zone{r: r.dst.Rect, kind: zoneDismiss})
-	r.dimAll(0.5)
+	r.dimAll(0.35)
 
-	const optH, pad, titleH, gap = 54, 18, 62, 8
+	optH, pad, titleH, gap := r.s(56), r.s(18), r.s(72), r.s(8)
 	n := len(p.opts)
+	if n == 0 {
+		return 0
+	}
 	cols, scrolls := 1, n > pickScrollOver
 	switch {
 	case scrolls:
@@ -505,89 +514,87 @@ func (r *paint) picker(p pickerView, scroll int) int {
 		cols = 2
 	}
 	per := (n + cols - 1) / cols
-	optW := 300
+	optW := r.s(300)
 	switch {
 	case scrolls:
-		optW = 640
+		optW = r.s(640)
 	case cols == 3:
-		optW = 220
+		optW = r.s(220)
 	case cols == 2:
-		optW = 250
+		optW = r.s(250)
 	}
+	maxW := (r.w - 2*r.s(24) - 2*pad - (cols-1)*gap) / cols
 	if !scrolls {
 		for _, o := range p.opts {
-			optW = max(optW, min(r.width(fc.value, o)+90, (r.w-80)/cols-gap))
+			optW = max(optW, r.width(fc.value, o)+r.s(90))
 		}
 	}
-	if tw := r.width(fc.header, p.title) + 12; cols*optW+(cols-1)*gap < tw {
-		optW = (tw - (cols-1)*gap + cols - 1) / cols // the title sets the width: the choices share it
-	}
+	optW = min(optW, maxW)
 	shown := per
 	if scrolls {
-		shown = pickRows
+		shown = min(pickRows, max(1, (r.h-2*r.s(24)-titleH-pad)/optH))
 	}
 	w := cols*optW + (cols-1)*gap + 2*pad
 	h := titleH + shown*optH + pad
-	card := image.Rect((r.w-w)/2, (r.h-h)/2, (r.w+w)/2, (r.h+h)/2)
-	list := image.Rect(card.Min.X+4, card.Min.Y+titleH, card.Max.X+2, card.Min.Y+titleH+shown*optH)
+	card := image.Rect((r.w-w)/2, (r.h-h)/2, (r.w-w)/2+w, (r.h-h)/2+h)
+	list := image.Rect(card.Min.X+pad, card.Min.Y+titleH, card.Max.X-pad, card.Min.Y+titleH+shown*optH)
 	maxScroll := 0
 	if scrolls {
-		maxScroll = per*optH - list.Dy()
+		maxScroll = max(per*optH-list.Dy(), 0)
 		scroll = min(max(scroll, 0), maxScroll)
 	} else {
 		scroll = 0
 	}
 
-	r.roundShadow(card, r.cardRad(), 26, 10, shadowAlpha()*1.2)
-	r.roundFill(card, r.cardRad(), surface(4), surface(3))
-	r.roundHighlight(card, r.cardRad())
-	// The card before its choices go on, to clip a scrolled list back to its window after.
-	var under []uint8
+	r.roundFill(card, r.sf(16), surface(1), surface(1))
+	// Keep an explicit way back, in addition to tapping outside the sheet.
+	backRight := card.Max.X - pad
+	backLeft := r.pillButton(backRight, card.Min.Y+titleH/2, "Back", btnSecondary)
+	r.text(fc.labelBold, r.fit(fc.labelBold, p.title, backLeft-card.Min.X-pad-r.s(16)), card.Min.X+pad, card.Min.Y+titleH/2+r.s(8), cream)
+	r.rule(card.Min.X+pad, card.Max.X-pad, list.Min.Y-r.s(4), 0.7)
 	if scrolls {
-		under = slices.Clone(r.dst.Pix)
+		if len(r.pickerUnder) != len(r.dst.Pix) {
+			r.pickerUnder = make([]uint8, len(r.dst.Pix))
+		}
+		copy(r.pickerUnder, r.dst.Pix)
 	}
 
 	for i, o := range p.opts {
 		col, row := i/per, i%per
 		x0 := card.Min.X + pad + col*(optW+gap)
-		y0 := card.Min.Y + titleH + row*optH - scroll
+		y0 := list.Min.Y + row*optH - scroll
 		if y0+optH <= list.Min.Y || y0 >= list.Max.Y {
 			continue
 		}
-		b := image.Rect(x0, y0+3, x0+optW, y0+optH-3)
-		fg := cream
+		b := image.Rect(x0, y0+r.s(4), x0+optW, y0+optH-r.s(4))
+		fg, fill := cream, surface(3)
 		if i == p.cur {
-			r.roundFill(b, 14, shift(amber, 12), shift(amber, -12))
-			r.roundHighlight(b, 14)
-			fg = onAccent()
-			cx, cy := float64(b.Max.X-26), float64(b.Min.Y+b.Dy()/2)
-			r.aaLine(cx-8, cy, cx-3, cy+6, 2.8, fg)
-			r.aaLine(cx-3, cy+6, cx+8, cy-6, 2.8, fg)
-		} else {
-			r.roundFill(b, 14, surface(6), surface(5))
+			fg, fill = onAccent(), amber
 		}
-		tx := b.Min.X + 18
+		r.roundFill(b, r.sf(10), fill, fill)
+		if i == p.cur {
+			cx, cy := float64(b.Max.X-r.s(24)), float64(b.Min.Y+b.Dy()/2)
+			r.aaLine(cx-r.sf(8), cy, cx-r.sf(3), cy+r.sf(6), r.sf(2), fg)
+			r.aaLine(cx-r.sf(3), cy+r.sf(6), cx+r.sf(8), cy-r.sf(6), r.sf(2), fg)
+		}
+		tx := b.Min.X + r.s(16)
 		if i < len(p.swatches) {
 			sw := p.swatches[i]
-			cx, cy := float64(b.Min.X+30), float64(b.Min.Y+b.Dy()/2)
-			r.aaDisc(cx, cy, 13, sw[0])
-			r.aaRing(cx, cy, 13, 1.4, 0, 2*math.Pi, lerp(sw[0], color.RGBA{255, 255, 255, 255}, 0.3))
-			r.aaDisc(cx, cy, 6.5, sw[1])
-			tx = b.Min.X + 54
+			cx, cy := float64(b.Min.X+r.s(28)), float64(b.Min.Y+b.Dy()/2)
+			r.aaDisc(cx, cy, r.sf(12), sw[0])
+			r.aaRing(cx, cy, r.sf(12), r.sf(1), 0, 2*math.Pi, fg)
+			r.aaDisc(cx, cy, r.sf(6), sw[1])
+			tx = b.Min.X + r.s(50)
 		}
-		r.text(fc.value, r.fit(fc.value, o, b.Max.X-44-tx), tx, b.Min.Y+b.Dy()/2+9, fg)
-		zr := image.Rect(x0-gap/2, y0, x0+optW+gap/2, y0+optH)
-		if scrolls {
-			zr = zr.Intersect(list)
-		}
+		r.text(fc.value, r.fit(fc.value, o, b.Max.X-r.s(44)-tx), tx, b.Min.Y+b.Dy()/2+r.s(8), fg)
+		zr := image.Rect(x0, y0, x0+optW, y0+optH).Intersect(list)
 		r.addZone(zone{r: zr, kind: zoneOption, opt: i, label: p.title})
 	}
 	if scrolls {
-		r.restore(under, image.Rect(card.Min.X, card.Min.Y-optH, card.Max.X, list.Min.Y))
-		r.restore(under, image.Rect(card.Min.X, list.Max.Y, card.Max.X, card.Max.Y+optH))
-		r.scrollHints(list, scroll, maxScroll, surface(3))
+		r.restore(r.pickerUnder, image.Rect(card.Min.X, max(0, list.Min.Y-optH), card.Max.X, list.Min.Y))
+		r.restore(r.pickerUnder, image.Rect(card.Min.X, list.Max.Y, card.Max.X, min(r.h, card.Max.Y+optH)))
+		r.scrollHints(list, scroll, maxScroll, surface(1))
 	}
-	r.text(fc.header, p.title, card.Min.X+pad+6, card.Min.Y+44, cream)
 	return maxScroll
 }
 
@@ -616,7 +623,7 @@ func (r *paint) dimAll(by float64) {
 func (r *paint) settingRow(card image.Rectangle, top int, row settingRow) {
 	fc := r.faces()
 	if row.kind == ctlHeading {
-		r.text(fc.button, r.fit(fc.button, row.label, card.Dx()-2*r.rowIn()), card.Min.X+r.rowIn(), top+r.s(headHBase)-r.s(12), amber)
+		r.text(fc.button, r.fit(fc.button, row.label, card.Dx()-2*r.rowIn()), card.Min.X+r.rowIn(), top+r.s(headHBase)-r.s(12), dim)
 		return
 	}
 	face := fc.label
@@ -626,13 +633,13 @@ func (r *paint) settingRow(card image.Rectangle, top int, row settingRow) {
 	right, cy := card.Max.X-r.s(26), top+r.rowH()/2
 	var labelEnd int
 	row.label, row.sub, labelEnd = r.rowWords(card, row, face)
-	base := top + r.s(40)
+	base := cy + r.s(9)
 	if row.sub == "" {
 		r.text(face, row.label, card.Min.X+r.rowIn(), base, cream)
 	} else {
-		base = top + r.s(30)
+		base = cy - r.s(4)
 		r.text(face, row.label, card.Min.X+r.rowIn(), base, cream)
-		r.text(fc.sub, row.sub, card.Min.X+r.rowIn(), top+r.s(53), dim)
+		r.text(fc.sub, row.sub, card.Min.X+r.rowIn(), cy+r.s(20), dim)
 	}
 	if row.locked {
 		x := card.Min.X + r.rowIn() + r.width(face, row.label) + r.s(lockGap)
@@ -651,15 +658,15 @@ func (r *paint) settingRow(card image.Rectangle, top int, row settingRow) {
 	switch row.kind {
 	case ctlValue:
 		v := fit(row.value, right)
-		r.text(fc.value, v, right-r.width(fc.value, v), cy+9, dim)
+		r.text(fc.value, v, right-r.width(fc.value, v), cy+r.s(8), cream)
 	case ctlToggle:
 		x := r.toggle(right, cy, row.on)
-		if v := fit(row.value, x-16); v != "" {
-			r.text(fc.value, v, x-16-r.width(fc.value, v), cy+9, dim)
+		if v := fit(row.value, x-r.s(16)); v != "" {
+			r.text(fc.value, v, x-r.s(16)-r.width(fc.value, v), cy+r.s(8), dim)
 		}
 		if row.rowTap {
 			add(whole, partRow)
-			add(image.Rect(x-14, top, card.Max.X-r.s(8), top+r.rowH()), partMain)
+			add(image.Rect(x-r.s(14), top, card.Max.X-r.s(8), top+r.rowH()), partMain)
 			break
 		}
 		add(whole, partMain) // the whole row flips the switch: a small target otherwise
@@ -669,35 +676,31 @@ func (r *paint) settingRow(card image.Rectangle, top int, row settingRow) {
 		chipW, chipGap := r.dayChip()
 		x0 := right - 7*chipW - 6*chipGap
 		for i, name := range []string{"S", "M", "T", "W", "T", "F", "S"} {
-			b := image.Rect(x0+i*(chipW+chipGap), cy-21, x0+i*(chipW+chipGap)+chipW, cy+21)
-			ink := cream
+			b := image.Rect(x0+i*(chipW+chipGap), cy-r.s(24), x0+i*(chipW+chipGap)+chipW, cy+r.s(24))
+			ink, fill := cream, surface(3)
 			if row.days&(1<<i) != 0 {
-				r.roundFill(b, 21, shift(amber, 12), shift(amber, -12))
-				r.roundHighlight(b, 21)
-				ink = onAccent()
-			} else {
-				r.roundFill(b, 21, surface(5), surface(4))
-				r.roundStroke(b, 21, 1, ember)
+				ink, fill = onAccent(), amber
 			}
-			r.text(fc.button, name, b.Min.X+(chipW-r.width(fc.button, name))/2, cy+8, ink)
+			r.roundFill(b, r.sf(10), fill, fill)
+			r.text(fc.button, name, b.Min.X+(chipW-r.width(fc.button, name))/2, cy+r.s(8), ink)
 			if row.id != "" {
 				r.addZone(zone{r: image.Rect(b.Min.X-chipGap/2, top, b.Max.X+chipGap/2, top+r.rowH()), kind: zoneRow, id: row.id, part: partDay, opt: i, label: row.label})
 			}
 		}
 	case ctlStepper:
 		minus, plus := r.stepper(right, cy, row.value)
-		add(minus.Inset(-6), partMinus)
-		add(plus.Inset(-6), partPlus)
+		add(minus, partMinus)
+		add(plus, partPlus)
 	case ctlChoice:
 		extra := 0
 		if row.button != "" {
-			extra = r.width(fc.button, row.button) + 44 + 12
+			extra = r.width(fc.button, row.button) + r.s(44+12)
 		}
-		x := r.choice(right, cy, fit(row.value, right-58-extra))
+		x := r.choice(right, cy, fit(row.value, right-r.s(58)-extra))
 		if row.button != "" {
-			bx := r.pillButton(x-12, cy, row.button, btnSecondary)
+			bx := r.pillButton(x-r.s(12), cy, row.button, btnSecondary)
 			add(whole, partMain)
-			add(image.Rect(bx-6, top, x-6, top+r.rowH()), partExtra)
+			add(image.Rect(bx, cy-r.s(24), x-r.s(12), cy+r.s(24)), partExtra)
 			break
 		}
 		add(whole, partMain)
@@ -707,13 +710,13 @@ func (r *paint) settingRow(card image.Rectangle, top int, row settingRow) {
 			style = btnDanger
 		}
 		x := r.pillButton(right, cy, row.button, style)
-		if v := fit(row.value, x-16); v != "" {
-			r.text(fc.value, v, x-16-r.width(fc.value, v), cy+9, dim)
+		if v := fit(row.value, x-r.s(16)); v != "" {
+			r.text(fc.value, v, x-r.s(16)-r.width(fc.value, v), cy+r.s(8), dim)
 		}
 		if row.rowTap {
 			add(whole, partMain) // the whole row does what its button does
 		}
-		add(image.Rect(x-8, top+4, card.Max.X-12, top+r.rowH()-4), partMain)
+		add(image.Rect(x, cy-r.s(24), right, cy+r.s(24)), partMain)
 	}
 }
 
@@ -757,7 +760,7 @@ func (r *paint) dayChip() (w, gap int) {
 	if r.round {
 		return 38, 6
 	}
-	return 50, 8
+	return r.s(48), r.s(6)
 }
 
 // controlWidth is how much of a row its control takes, from the right, before any value beside it.
@@ -765,17 +768,20 @@ func (r *paint) controlWidth(row settingRow) int {
 	fc := r.faces()
 	switch row.kind {
 	case ctlToggle:
-		return 66
+		return r.s(66)
 	case ctlStepper:
-		return 44 + max(r.width(fc.value, row.value), 80) + 24 + 44
+		return r.s(48+24+48) + max(r.width(fc.value, row.value), r.s(72))
 	case ctlChoice:
-		w := r.width(fc.value, row.value) + 58
+		w := r.width(fc.value, row.value) + r.s(58)
 		if row.button != "" {
-			w += r.width(fc.button, row.button) + 44 + 12
+			w += r.width(fc.button, row.button) + r.s(44+12)
 		}
 		return w
 	case ctlButton, ctlDanger:
-		return r.width(fc.button, row.button) + 44
+		return r.width(fc.button, row.button) + r.s(44)
+	case ctlSwatches:
+		// The Show's fourteen color dots; the Spot does not expose this row.
+		return 14*r.s(28) + 13*r.s(6)
 	case ctlDays:
 		w, gap := r.dayChip()
 		return 7*w + 6*gap
@@ -785,54 +791,47 @@ func (r *paint) controlWidth(row settingRow) int {
 
 // toggle draws a switch ending at right, centered on cy, and returns its left edge.
 func (r *paint) toggle(right, cy int, on bool) int {
-	track := image.Rect(right-66, cy-17, right, cy+17)
+	track := image.Rect(right-r.s(66), cy-r.s(18), right, cy+r.s(18))
+	fill, knob := surface(5), cream
 	if on {
-		r.roundFill(track, 17, shift(amber, 10), shift(amber, -14))
-	} else {
-		r.roundFill(track, 17, surface(6), surface(5))
-		r.roundStroke(track, 17, 1, ember)
+		fill, knob = amber, onAccent()
 	}
-	kx := float64(track.Min.X + 17)
+	r.roundFill(track, r.sf(16), fill, fill)
+	kx := track.Min.X + r.s(18)
 	if on {
-		kx = float64(track.Max.X - 17)
+		kx = track.Max.X - r.s(18)
 	}
-	knob := image.Rect(int(kx)-13, cy-13, int(kx)+13, cy+13)
-	r.roundShadow(knob, 13, 5, 2, 0.45)
-	r.roundFill(knob, 13, shift(cream, 12), shift(cream, -6))
+	r.aaDisc(float64(kx), float64(cy), r.sf(12), knob)
 	return track.Min.X
 }
 
 // stepper draws − value + ending at right, and returns where its two buttons are.
 func (r *paint) stepper(right, cy int, value string) (minusAt, plusAt image.Rectangle) {
 	fc := r.faces()
-	plus := image.Rect(right-44, cy-20, right, cy+20)
-	vw := max(r.width(fc.value, value), 80)
-	minus := image.Rect(plus.Min.X-vw-24-44, cy-20, plus.Min.X-vw-24, cy+20)
-	for _, b := range []image.Rectangle{minus, plus} {
-		r.roundShadow(b, 12, 6, 2, shadowAlpha()*0.7)
-		r.roundFill(b, 12, surface(7), surface(5))
-		r.roundHighlight(b, 12)
-	}
-	mx, px := float64(minus.Min.X+22), float64(plus.Min.X+22)
-	r.aaLine(mx-8, float64(cy), mx+8, float64(cy), 2.6, cream)
-	r.aaLine(px-8, float64(cy), px+8, float64(cy), 2.6, cream)
-	r.aaLine(px, float64(cy)-8, px, float64(cy)+8, 2.6, cream)
-	r.text(fc.value, value, minus.Max.X+12+(vw-r.width(fc.value, value))/2, cy+9, cream)
+	plus := image.Rect(right-r.s(48), cy-r.s(24), right, cy+r.s(24))
+	vw := max(r.width(fc.value, value), r.s(72))
+	minus := image.Rect(plus.Min.X-vw-r.s(24+48), cy-r.s(24), plus.Min.X-vw-r.s(24), cy+r.s(24))
+	r.roundFill(minus, r.sf(10), surface(3), surface(3))
+	r.roundFill(plus, r.sf(10), surface(3), surface(3))
+	mx, px := float64(minus.Min.X+r.s(24)), float64(plus.Min.X+r.s(24))
+	r.aaLine(mx-r.sf(8), float64(cy), mx+r.sf(8), float64(cy), r.sf(2), cream)
+	r.aaLine(px-r.sf(8), float64(cy), px+r.sf(8), float64(cy), r.sf(2), cream)
+	r.aaLine(px, float64(cy)-r.sf(8), px, float64(cy)+r.sf(8), r.sf(2), cream)
+	r.text(fc.value, value, minus.Max.X+r.s(12)+(vw-r.width(fc.value, value))/2, cy+r.s(8), cream)
 	return minus, plus
 }
 
 // choice draws a value in a pill with a chevron, the way to a list of options; returns its left edge.
 func (r *paint) choice(right, cy int, value string) int {
 	fc := r.faces()
-	w := r.width(fc.value, value) + 58
-	pill := image.Rect(right-w, cy-20, right, cy+20)
-	r.roundFill(pill, 20, surface(5), surface(4))
-	r.roundStroke(pill, 20, 1, ember)
-	r.text(fc.value, value, pill.Min.X+20, cy+9, cream)
-	x, y := float64(pill.Max.X-22), float64(cy)
-	r.aaLine(x-4, y-7, x+3, y, 2.4, dim)
-	r.aaLine(x+3, y, x-4, y+7, 2.4, dim)
-	return pill.Min.X
+	w := r.width(fc.value, value) + r.s(58)
+	b := image.Rect(right-w, cy-r.s(24), right, cy+r.s(24))
+	r.roundFill(b, r.sf(10), surface(3), surface(3))
+	r.text(fc.value, value, b.Min.X+r.s(18), cy+r.s(8), cream)
+	x, y := float64(b.Max.X-r.s(22)), float64(cy)
+	r.aaLine(x-r.sf(4), y-r.sf(6), x+r.sf(2), y, r.sf(2), cream)
+	r.aaLine(x+r.sf(2), y, x-r.sf(4), y+r.sf(6), r.sf(2), cream)
+	return b.Min.X
 }
 
 type buttonStyle int
@@ -846,13 +845,10 @@ const (
 // danger is the color of an action to think twice about, whatever the theme.
 var danger = color.RGBA{0xe5, 0x48, 0x4d, 0xff}
 
-// roundButton fills a rounded button in one color, lit and shadowed the way every raised thing on
-// these screens is. Separate from buttonFace because a few answers carry a color of their own that
-// means something — the phone's red and green — rather than taking the theme's accent.
+// roundButton shares flat action styling with the settings controls. Semantic
+// callers such as phone controls may still supply their own fill.
 func (r *paint) roundButton(b image.Rectangle, rad float64, fill color.RGBA) {
-	r.roundShadow(b, rad, 8, 3, shadowAlpha()*0.8)
-	r.roundFill(b, rad, shift(fill, 14), shift(fill, -14))
-	r.roundHighlight(b, rad)
+	r.roundFill(b, min(rad, r.sf(12)), fill, fill)
 }
 
 // buttonFace draws a button's shape and returns the color its label should be drawn in.
@@ -867,13 +863,10 @@ func (r *paint) buttonFace(b image.Rectangle, rad float64, style buttonStyle) co
 		r.roundButton(b, rad, amber)
 		return onAccent()
 	case btnSecondary:
-		r.roundShadow(b, rad, 6, 2, shadowAlpha()*0.5)
-		r.roundFill(b, rad, surface(6), surface(4))
-		r.roundStroke(b, rad, 1, ember)
-		r.roundHighlight(b, rad)
+		r.roundFill(b, min(rad, r.sf(12)), surface(3), surface(3))
 	case btnDanger:
-		r.roundFill(b, rad, surface(4), surface(3))
-		r.roundStroke(b, rad, 1.6, danger)
+		r.roundFill(b, min(rad, r.sf(12)), surface(3), surface(3))
+		r.roundStroke(b, min(rad, r.sf(12)), r.sf(1), danger)
 		return danger
 	}
 	return cream
@@ -883,9 +876,9 @@ func (r *paint) buttonFace(b image.Rectangle, rad float64, style buttonStyle) co
 func (r *paint) pillButton(right, cy int, label string, style buttonStyle) int {
 	fc := r.faces()
 	w := r.width(fc.button, label) + r.s(44)
-	half := r.s(20)
+	half := r.s(24)
 	b := image.Rect(right-w, cy-half, right, cy+half)
-	fg := r.buttonFace(b, float64(half), style)
+	fg := r.buttonFace(b, r.sf(12), style)
 	r.text(fc.button, label, b.Min.X+r.s(22), cy+r.s(8), fg)
 	return b.Min.X
 }
@@ -944,10 +937,15 @@ func shadowAlpha() float64 {
 	return 0.22
 }
 
-// onAccent is text that reads on the accent: the ground on a light accent, the text color on a dark one.
+// onAccent picks the opposing luminance role in either theme family.
 func onAccent() color.RGBA {
-	if 0.299*float64(amber.R)+0.587*float64(amber.G)+0.114*float64(amber.B) > 128 {
-		return shift(walnut, -8)
+	lightAccent := luma(amber.R, amber.G, amber.B) > 128
+	darkGround := dark()
+	if lightAccent == darkGround {
+		if darkGround {
+			return shift(walnut, -8)
+		}
+		return walnut
 	}
 	return cream
 }
@@ -1018,7 +1016,10 @@ func (r *paint) roundFill(b image.Rectangle, rad float64, top, bottom color.RGBA
 	// just outside the top and bottom edges are left alone: no pixel center there is covered.
 	corner := min(int(math.Ceil(rad))+1, b.Dx()/2)
 	for y := b.Min.Y; y < b.Max.Y; y++ {
-		c := lerp(top, bottom, clamp01((float64(y)-y0)/(y1-y0)))
+		c := top
+		if top != bottom {
+			c = lerp(top, bottom, clamp01((float64(y)-y0)/(y1-y0)))
+		}
 		for x := b.Min.X - 1; x < b.Min.X+corner; x++ {
 			r.blendAt(x, y, c, clamp01(0.5-rrDist(float64(x)+0.5, float64(y)+0.5, x0, y0, x1, y1, rad)))
 		}

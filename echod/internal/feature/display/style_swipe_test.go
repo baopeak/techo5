@@ -9,23 +9,27 @@ import (
 	"github.com/HuskerMinion/techo5/echod/internal/config"
 )
 
-// Swiping between clock styles is on by default, off with its switch, and off whenever Tap on the
-// clock is Nothing.
-func TestTheStyleSwipeSetting(t *testing.T) {
+// Disabling tap-to-assist must not disable a separate clock navigation gesture.
+// The swipe switch remains authoritative for every tap action.
+func TestClockTapAndStyleSwipeAreIndependent(t *testing.T) {
 	config.Use(filepath.Join(t.TempDir(), "state.json"))
-	if !styleSwipeOn() {
-		t.Error("off on a new device")
-	}
-	sw := styleSwipeSwitch()
-	sw.OnCommand(false)
-	if styleSwipeOn() || sw.Get() {
-		t.Error("still on after the switch went off")
-	}
-	sw.OnCommand(true)
-	if err := config.Set().Screen().ClockTap("nothing"); err != nil {
-		t.Fatal(err)
-	}
-	if styleSwipeOn() {
-		t.Error("on with Tap on the clock set to Nothing")
+	for _, tap := range []string{"nothing", "", "dashboard", "deck"} {
+		t.Run(tap, func(t *testing.T) {
+			if err := config.Set().Screen().ClockTap(tap); err != nil {
+				t.Fatal(err)
+			}
+			if err := config.Set().Screen().NoStyleSwipe(false); err != nil {
+				t.Fatal(err)
+			}
+			if !styleSwipeOn() {
+				t.Fatal("enabled clock swipes were blocked by the tap action")
+			}
+			if err := config.Set().Screen().NoStyleSwipe(true); err != nil {
+				t.Fatal(err)
+			}
+			if styleSwipeOn() {
+				t.Fatal("disabled clock swipes were enabled by the tap action")
+			}
+		})
 	}
 }
