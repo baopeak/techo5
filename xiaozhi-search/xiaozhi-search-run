@@ -1,0 +1,13 @@
+#!/bin/sh
+# Rootfs-owned launcher; credentials and enable marker remain in persistent /data.
+# No query, endpoint token, or result content is written to a log.
+while [ ! -f /data/misc/xiaozhi-search/enabled ] || [ ! -r /data/misc/xiaozhi-search/endpoint.txt ]; do
+    sleep 30
+done
+mkdir -p /run/xiaozhi-search || exit 1
+chown 65534:65534 /run/xiaozhi-search || exit 1
+chmod 700 /run/xiaozhi-search || exit 1
+export GOMAXPROCS=1
+# Go's soft memory target, not a kernel-enforced RSS cap.
+export GOMEMLIMIT=48MiB
+exec nice -n 10 setpriv --no-new-privs /usr/local/sbin/xiaozhi-search-mcp --drop-user --state /run/xiaozhi-search/status.json </dev/null >/dev/null 2>&1

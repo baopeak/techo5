@@ -19,3 +19,10 @@ inputs/
 backups/
 build/
 .claude/
+
+# Xiaozhi MCP local outputs and private endpoint/status files.
+/xiaozhi-search/artifacts/
+/xiaozhi-search/xiaozhi-search-mcp
+/xiaozhi-search/xiaozhi-search-mcp.exe
+/xiaozhi-search/endpoint.txt
+/xiaozhi-search/status.json
