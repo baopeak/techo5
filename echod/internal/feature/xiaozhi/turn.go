@@ -231,9 +231,6 @@ func (f *Feature) Stop() {
 		down.stop("it was interrupted")
 	}
 	if t == nil {
-		// Capture may already have ended while the screen still awaits this
-		// session's response. A stop or disconnect ends that pending state too.
-		finishScreen(false)
 		return
 	}
 

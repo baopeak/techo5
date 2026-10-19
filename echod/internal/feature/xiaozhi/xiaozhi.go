@@ -544,6 +544,9 @@ func (f *Feature) hold(ctx context.Context) error {
 	// write discover the fact is what stops a dropped session from leaving the microphone open for
 	// as long as the reconnect takes.
 	f.Stop()
+	// No new turn can open until this owner installs another session. Clear
+	// the old response here even if capture had already finished before EOF.
+	finishScreen(false)
 
 	if f.asked.Swap(false) {
 		// Somebody asked for this session to end — the switch, or a terminal. That is not something
