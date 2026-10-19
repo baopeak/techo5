@@ -1,8 +1,11 @@
 ## baopeak fork: Vietnamese display and optional on-device search
 
-This is **[baopeak/techo5](https://github.com/baopeak/techo5)**, a fork of
-[HuskerMinion/techo5](https://github.com/HuskerMinion/techo5). The upstream project,
-features and credits are retained below; the upstream release badge is not a fork update channel.
+This is **[baopeak/techo5](https://github.com/baopeak/techo5)**, based on
+**[asmsaifs/techo5](https://github.com/asmsaifs/techo5)**, which builds on the original
+**[HuskerMinion/techo5](https://github.com/HuskerMinion/techo5)** project.
+Credit to **asmsaifs** for the fork used as the starting point for these changes, and to
+**HuskerMinion and the upstream contributors** for TECHO5 and its underlying work.
+Their features and credits are retained below; the upstream release badge is not a fork update channel.
 
 - **Vietnamese text:** embedded Inter fonts include Vietnamese glyphs, with NFC normalization
   so precomposed letters and combining accents render and measure consistently.
