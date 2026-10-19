@@ -1,7 +1,9 @@
 # Building TECHO5 yourself
 
-You don't need any of this to install or update a Show 5. `tools/install-show.py` and Home
-Assistant's update card use the signed releases. This page is for changing the daemon or the images.
+Upstream installations and Home Assistant's update card use upstream signed releases. This fork's
+custom prereleases are unsigned and are not an upstream OTA channel. This page is for changing
+the daemon or images; see the [optional on-device Exa MCP guide](xiaozhi-mcp.md) for the separate
+sidecar, supported `crown` deployment and rollback constraints.
 
 The Echo Dot and Echo Spot have their own pages:
 [techo5-dot docs/building.md](https://github.com/HuskerMinion/techo5-dot/blob/main/docs/building.md) and
@@ -34,7 +36,7 @@ over SSH), and the kernel needs a Linux machine or virtual machine.
 Get the code (the three repositories side by side, if you build for more than one device):
 
 ```
-git clone https://github.com/HuskerMinion/techo5
+git clone https://github.com/baopeak/techo5
 cd techo5
 ```
 
@@ -101,6 +103,10 @@ HOST=<address> bash tools/linux/deploy-rootfs.sh --version v0.0.0-test --install
 The first keeps the tarball. The second sends it to a Show (SSH on, as above) and installs it into the
 spare slot, where it boots on trial and falls back if it doesn't settle. On macOS only the second
 works: the build then runs on the Show itself, which takes a few minutes longer.
+
+The ordinary base rootfs tooling does **not** include `xiaozhi-search` automatically. To add it to a
+custom `crown` rootfs, follow [the MCP build and packaging instructions](xiaozhi-mcp.md#build-and-package).
+Use that guide's inactive-slot deployment, not the temporary daemon bind-mount procedure above.
 
 ## 5. The kernel (Bluetooth)
 

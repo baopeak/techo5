@@ -1,3 +1,33 @@
+## baopeak fork: Vietnamese display and optional on-device search
+
+This is **[baopeak/techo5](https://github.com/baopeak/techo5)**, a fork of
+[HuskerMinion/techo5](https://github.com/HuskerMinion/techo5). The upstream project,
+features and credits are retained below; the upstream release badge is not a fork update channel.
+
+- **Vietnamese text:** embedded Inter fonts include Vietnamese glyphs, with NFC normalization
+  so precomposed letters and combining accents render and measure consistently.
+- **Listening lifecycle:** the indicator follows the actual Xiaozhi microphone stream, including
+  follow-ups. Manual end-of-speech allows **1.2 seconds of quiet** between phrases.
+  See [Xiaozhi setup](docs/xiaozhi.md).
+- **Optional Exa MCP sidecar:** web search runs on the device, separately from `echod`, through
+  Exa's official keyless MCP endpoint. No laptop, Exa API key or paid fallback is required;
+  anonymous use is rate limited and the exact quota is unknown.
+  See the [build, setup and rollback guide](docs/xiaozhi-mcp.md).
+
+**[Fork prereleases](https://github.com/baopeak/techo5/releases)** are custom, unsigned builds,
+not upstream signed OTA releases. The `v1.3.5-xiaozhi-mcp.1` prerelease targets only an
+**Echo Show 8 1st gen (2019, `crown`) already running TECHO5 Alpine Linux**.
+It supplies binaries and a launcher, not a ready-made rootfs or boot image; use the guide to
+package a custom rootfs. Do not use these artifacts on Android or `athena`.
+A previous custom rootfs with sidecar `1.1.0` survived a real reboot with a good rollback slot.
+Vietnamese and English sample searches passed then, but the shared free Exa quota has since
+been observed exhausted. The corrected sidecar `1.1.1` is not device-reboot validated.
+Cloud MCP initialization/catalog discovery was observed, but **a voice-triggered model tool
+call has not yet been observed**.
+Other Echo variants listed below describe upstream support, not testing of this fork.
+
+---
+
 <p align="center">
   <img src="logo/TECHO5_logo.png" alt="TECHO5" width="220">
 </p>

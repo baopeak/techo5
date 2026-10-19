@@ -14,9 +14,10 @@ third party: it hears what you say, and it keeps whatever it keeps under its own
 this project's to promise. The wake word is matched on the device and is not sent.
 
 What else goes out: the device's id and a random client id, so the service can tell devices apart, and
-the activation described below. The device sends no camera, no screen and no Home Assistant data. It
-does not advertise the protocol's tool-calling feature, so the server cannot ask the device to do
-anything.
+the activation described below. The voice client sends no camera, no screen and no Home Assistant
+data, and does not advertise protocol tool calling. The optional
+[on-device MCP search sidecar](xiaozhi-mcp.md) connects separately to the cloud's MCP endpoint;
+enabling it shares search queries with Exa and results with Xiaozhi.
 
 If that is not what you want, point the device at a server of your own
 ([`xiaozhi_host`](actions.md#set-the-xiaozhi-server)), or leave the switch on Home Assistant.
@@ -42,6 +43,19 @@ A transcript is already being processed, not an invitation to begin speaking. Wi
 on the device** enabled, manual turns allow 1.2 seconds of quiet between phrases before sending stop;
 the other voice backend keeps its own endpoint policy. A follow-up shows Listening only when its
 microphone stream has actually opened, not merely because a TTS stop arrived.
+
+Vietnamese screen text uses expanded Inter glyphs and NFC normalization. The font generator is
+[`tools/fonts/make_fonts.py`](../tools/fonts/make_fonts.py); regression coverage lives in
+[`fonts/vietnamese_test.go`](../echod/internal/lib/fonts/vietnamese_test.go),
+[`textrun/vietnamese_test.go`](../echod/internal/lib/textrun/vietnamese_test.go), and the
+[`Xiaozhi tests`](../echod/internal/feature/xiaozhi/), including endpoint and screen lifecycle tests.
+
+## Optional web search
+
+The [Exa MCP guide](xiaozhi-mcp.md) covers the separate, opt-in device service, private endpoint
+setup and safe A/B rollback. It is not part of the ordinary rootfs build or the voice client.
+The cloud must support model tool calling; successful connection and tool discovery alone do not
+prove a spoken request invokes search.
 
 ## Settings
 
