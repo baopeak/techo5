@@ -29,8 +29,9 @@ import (
 // cloud is a server that behaves like the official one for everything a turn touches: the OTA
 // call, the WebSocket, the hello, and a record of everything the client then sends.
 type cloud struct {
-	url  string
-	gone chan struct{}
+	url    string
+	gone   chan struct{}
+	closed sync.Once
 
 	mu     sync.Mutex
 	text   [][]byte
@@ -96,7 +97,7 @@ func (c *cloud) serve(t *testing.T) {
 		for {
 			kind, data, err := conn.ReadMessage()
 			if err != nil {
-				close(c.gone)
+				c.closed.Do(func() { close(c.gone) })
 				return
 			}
 			frame := append([]byte(nil), data...)

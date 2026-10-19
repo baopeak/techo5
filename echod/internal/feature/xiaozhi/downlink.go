@@ -327,7 +327,9 @@ func (d *downlink) heard(at time.Time) {
 // The decode happens outside the lock, on the socket's own goroutine: the codec is stateful, and
 // the only thing under the lock is where the samples go. A hushed downlink decodes nothing at all,
 // because none of it is going to be played and the decoder is reset when the next answer starts.
-func (d *downlink) push(pkt []byte) {
+// It reports whether decoded audio was accepted, rather than discarded by an
+// interruption; discarded packets cannot satisfy a newer request's response wait.
+func (d *downlink) push(pkt []byte) bool {
 	d.mu.Lock()
 	hushed := d.hushed
 	if hushed {
@@ -335,7 +337,7 @@ func (d *downlink) push(pkt []byte) {
 	}
 	d.mu.Unlock()
 	if hushed {
-		return
+		return false
 	}
 
 	at := time.Now()
@@ -353,7 +355,7 @@ func (d *downlink) push(pkt []byte) {
 			slog.Warn("xiaozhi: a speech packet would not decode",
 				"bytes", len(pkt), "failed", failed, "err", err)
 		}
-		return
+		return false
 	}
 	d.mu.Unlock()
 
@@ -372,12 +374,12 @@ func (d *downlink) push(pkt []byte) {
 	}
 	d.stereo = out
 
-	d.write(out, len(pkt), peak)
+	return d.write(out, len(pkt), peak)
 }
 
 // write lays decoded frames at the position the answer's first packet fixed. It is the only writer
 // of the buffer and the only place late is decided.
-func (d *downlink) write(frames []int16, n int, peak int16) {
+func (d *downlink) write(frames []int16, n int, peak int16) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -387,7 +389,7 @@ func (d *downlink) write(frames []int16, n int, peak int16) {
 	// starting to speak.
 	if d.hushed {
 		d.dropped++
-		return
+		return false
 	}
 
 	if !d.speaking {
@@ -416,11 +418,12 @@ func (d *downlink) write(frames []int16, n int, peak int16) {
 	if !d.anchored {
 		d.hold = append(d.hold, frames...)
 		if uint64(len(d.hold)/speaker.Channels) < cushionFrames {
-			return
+			return true
 		}
 		frames = d.anchor()
 	}
 	d.place(frames)
+	return true
 }
 
 // anchor gives the held head of an answer its position — the card's own next frame, plus the tail

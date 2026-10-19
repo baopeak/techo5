@@ -142,10 +142,11 @@ type Feature struct {
 	state   *esphome.TextSensor
 	control *Control
 
-	mu     sync.Mutex
-	status Status
-	sess   *Session
-	turn   *turn
+	mu       sync.Mutex
+	status   Status
+	sess     *Session
+	turn     *turn
+	response responseWait
 
 	// down is the speaking direction of the current session, and the only way anything in this file
 	// can make a sound. It is here rather than being made where it is used so that Stop has
@@ -543,6 +544,7 @@ func (f *Feature) hold(ctx context.Context) error {
 
 	f.mu.Lock()
 	f.sess = nil
+	f.response = responseWait{}
 	f.mu.Unlock()
 	// A turn belonged to the socket that just went. Ending it here rather than letting its next
 	// write discover the fact is what stops a dropped session from leaving the microphone open for
@@ -620,6 +622,11 @@ func (f *Feature) awaitActivation(ctx context.Context, id identity, host string)
 // The downlink is a parameter rather than something looked up, because this runs on the socket's
 // goroutine and the session it belongs to may be gone by the time anybody asked.
 func (f *Feature) onEvent(e Event, down *downlink) {
+	f.mu.Lock()
+	if len(e.Audio) == 0 && f.down == down && f.response.turn != 0 && !f.response.done {
+		f.response.observe(e, time.Now())
+	}
+	f.mu.Unlock()
 	switch e.Type {
 	case TypeSTT:
 		slog.Info("xiaozhi: transcript", "text", e.Text)
@@ -666,7 +673,17 @@ func (f *Feature) onEvent(e Event, down *downlink) {
 func (f *Feature) onSpeech(e Event, down *downlink) {
 	switch {
 	case len(e.Audio) > 0:
-		down.push(e.Audio)
+		f.mu.Lock()
+		turn := f.response.turn
+		f.mu.Unlock()
+		if down.push(e.Audio) {
+			f.mu.Lock()
+			t := f.turn
+			if f.down == down && f.response.turn == turn && (t == nil || t.id == turn && t.serverDone.Load()) {
+				f.response.observe(e, time.Now())
+			}
+			f.mu.Unlock()
+		}
 		return
 	case e.State == TTSStart:
 		slog.Debug("xiaozhi: speech started", "session", e.SessionID)
@@ -731,6 +748,11 @@ func (f *Feature) report(ctx context.Context, sess *Session, down *downlink) {
 		case <-ctx.Done():
 			return
 		case <-watch.C:
+			if why, turn := f.expireResponse(sess, down, time.Now()); why != "" {
+				slog.Warn("xiaozhi: response timed out; reconnecting", "turn", turn, "why", why)
+				_ = sess.Close()
+				return
+			}
 			if down.isSpeaking() && sess.Idle() > answerStall {
 				slog.Warn("xiaozhi: the answer stalled, treating the link as dropped", "silent", sess.Idle().Round(time.Millisecond))
 				_ = sess.Close()
@@ -769,6 +791,7 @@ func (f *Feature) close() {
 	f.mu.Lock()
 	sess := f.sess
 	f.sess = nil
+	f.response = responseWait{}
 	f.mu.Unlock()
 	if sess != nil {
 		_ = sess.Close()

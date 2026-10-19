@@ -87,6 +87,21 @@ handling changes neither MCP configuration nor cloud conversational memory.
 Stopping or losing a session now clears a pending Thinking/Replying screen even after the
 microphone has closed. Returning to Idle does not manufacture an answer when the cloud returned none.
 
+If a submitted utterance receives no recognition or answer within 15 seconds, the client closes
+that session and reconnects instead of leaving **Thinking** up until the cloud eventually hangs up.
+The deadline starts after capture ends and `listen/stop` is written, not during recording.
+Transport pings do not count as an answer. Once STT or other answer progress arrives, the client
+allows up to 90 seconds without further request progress for model/tool work, until TTS starts.
+TTS start/audio uses the existing five-second playback stall watch. A new turn, canceled active
+capture or completed answer retires the old wait. Stopping after capture has already ended does not
+disarm recovery of an unanswered request. Recovery does not replay recordings or invent an answer,
+and cannot fix a cloud service that did not process the request.
+
+An unsolicited local wake is a separate issue from a response timeout. A detector score is not proof
+that someone spoke the wake word. Do not blindly increase its threshold: a false accept scoring
+0.995 will still pass a 0.90 threshold. Leave recordings disabled unless explicitly collecting a
+consented diagnostic sample; touch-to-assist can also start a turn without a spoken wake.
+
 
 ## Optional web search
 

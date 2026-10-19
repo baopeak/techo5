@@ -190,6 +190,7 @@ func (f *Feature) open(mode string, skip, limit time.Duration, followUp bool) er
 		f.conversationEnded.Store(false)
 	}
 	f.turn = t
+	f.response = responseWait{turn: t.id}
 	f.mu.Unlock()
 
 	c := config.Get().Xiaozhi
@@ -224,6 +225,9 @@ func (f *Feature) open(mode string, skip, limit time.Duration, followUp bool) er
 func (f *Feature) Stop() {
 	f.mu.Lock()
 	t, down := f.turn, f.down
+	if t != nil {
+		f.response = responseWait{}
+	}
 	f.mu.Unlock()
 
 	// Before the turn, and not after it. Cancelling first means the uplink goroutine stops asking
@@ -436,6 +440,9 @@ func (f *Feature) closeTurn(t *turn, why string) {
 	finishScreen(why == "the speaker finished" || t.serverDone.Load())
 	f.mu.Lock()
 	if f.turn == t {
+		if f.response.turn == t.id && why != "the speaker finished" && !t.serverDone.Load() {
+			f.response = responseWait{}
+		}
 		f.turn = nil
 	}
 	down := f.down
@@ -464,6 +471,15 @@ func (f *Feature) closeTurn(t *turn, why string) {
 			slog.Info("xiaozhi: listen stop sent", "turn", t.id, "mode", t.mode,
 				"since_open_ms", time.Since(t.at).Milliseconds())
 		}
+	}
+	// The initial-response grace starts after listen/stop was written, not
+	// while a slow network write may still be consuming its own deadline.
+	if why == "the speaker finished" || t.serverDone.Load() {
+		f.mu.Lock()
+		if f.sess == t.sess && f.turn == nil && f.response.turn == t.id {
+			f.response.submit(time.Now())
+		}
+		f.mu.Unlock()
 	}
 
 	took := time.Since(t.at)
