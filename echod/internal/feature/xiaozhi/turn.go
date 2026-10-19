@@ -186,6 +186,9 @@ func (f *Feature) open(mode string, skip, limit time.Duration, followUp bool) er
 		cancel()
 		return errors.New("the session ended as the turn was opening")
 	}
+	if !followUp {
+		f.conversationEnded.Store(false)
+	}
 	f.turn = t
 	f.mu.Unlock()
 

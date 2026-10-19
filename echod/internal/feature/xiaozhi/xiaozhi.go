@@ -162,6 +162,10 @@ type Feature struct {
 	// asked across a reconnect is still waiting for the turn it asked for.
 	turns atomic.Int32
 
+	// A closing utterance suppresses automatic listening until an explicit new
+	// turn opens. Writes share mu with turn installation; playback only reads it.
+	conversationEnded atomic.Bool
+
 	// asked records that a session was ended on request rather than by the endpoint, so hold can
 	// tell the two apart. Without it a terminal asking to reconnect would either do nothing, or
 	// reconnect in a tight loop past the backoff that is there to stop that happening.
@@ -619,16 +623,25 @@ func (f *Feature) onEvent(e Event, down *downlink) {
 	switch e.Type {
 	case TypeSTT:
 		slog.Info("xiaozhi: transcript", "text", e.Text)
-		onScreenEvent(e)
-		// A transcript means the server has decided the utterance is over. A turn it ends itself
-		// (auto mode) would otherwise keep sending through the answer and hold the microphone.
+		closing := isConversationEnd(e.Text)
 		f.mu.Lock()
-		t := f.turn
-		f.mu.Unlock()
-		if t != nil && !t.manual {
-			t.serverDone.Store(true)
-			safe.Go("xiaozhi end turn", f.Cancel)
+		if e.Text != "" {
+			f.conversationEnded.Store(closing)
 		}
+		t := f.turn
+		if t != nil && (!t.manual || closing && t.followUp) {
+			if !t.manual {
+				t.serverDone.Store(true)
+			}
+			// Cancel this captured turn, not whichever turn happens to be
+			// current when a separately scheduled cancellation runs.
+			t.cancel()
+		}
+		f.mu.Unlock()
+		if closing {
+			slog.Info("xiaozhi: the speaker ended the conversation")
+		}
+		onScreenEvent(e)
 	case TypeLLM:
 		slog.Info("xiaozhi: reply", "state", e.State, "text", e.Text)
 		onScreenEvent(e)
@@ -674,6 +687,9 @@ func (f *Feature) onSpeech(e Event, down *downlink) {
 // speech is where a stretch of speech goes when it has been heard. It is called from the speaker's
 // write loop, off the lock, so the log and the socket are not answered while a frame is late.
 func (f *Feature) speech(s *Speech) {
+	// Snapshot before publishing completion: a new explicit wake may rearm
+	// the conversation while listeners receive the old answer's completion.
+	ended := f.conversationEnded.Load()
 	slog.Info("xiaozhi: speech ended",
 		"speech", s.ID, "state", s.State,
 		"packets", s.Packets, "bytes", s.Bytes, "seconds", s.Seconds, "kbps", s.Kbps,
@@ -685,6 +701,10 @@ func (f *Feature) speech(s *Speech) {
 	// Only an answer heard to the end asks for a follow-up: a stopped or interrupted one means
 	// somebody wanted it to stop.
 	if s.State == "the tail was heard" && s.Packets > 0 {
+		if ended {
+			slog.Info("xiaozhi: closing answer finished; not listening again")
+			return
+		}
 		answered.mu.Lock()
 		fn := answered.fn
 		answered.mu.Unlock()

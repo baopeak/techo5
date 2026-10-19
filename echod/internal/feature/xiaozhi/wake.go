@@ -325,6 +325,9 @@ func OnAnswered(fn func()) {
 // FollowUp opens a turn for d with no wake word behind it, using the same
 // end-of-speech setting as a wake turn. Hearing nothing within d ends it.
 func (f *Feature) FollowUp(d time.Duration) error {
+	if f.conversationEnded.Load() {
+		return errConversationEnded
+	}
 	if ready, why := f.BackendReady(); !ready {
 		return errors.New("xiaozhi cannot take a turn: " + why)
 	}
@@ -332,5 +335,24 @@ func (f *Feature) FollowUp(d time.Duration) error {
 		return errors.New("a turn is already open")
 	}
 	slog.Info("xiaozhi: listening again after the answer", "for", d)
-	return f.open(wakeMode(), 0, d, true)
+	if err := f.open(wakeMode(), 0, d, true); err != nil {
+		return err
+	}
+	// STT may have closed the conversation while this turn was opening.
+	// Recheck under the same lock used by STT and explicit turn installation.
+	f.mu.Lock()
+	ended := f.conversationEnded.Load()
+	var closing *turn
+	if t := f.turn; ended && t != nil && t.followUp {
+		closing = t
+		t.cancel()
+	}
+	f.mu.Unlock()
+	if closing != nil {
+		<-closing.ended
+	}
+	if ended {
+		return errConversationEnded
+	}
+	return nil
 }

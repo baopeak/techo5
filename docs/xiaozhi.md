@@ -53,19 +53,36 @@ Vietnamese screen text uses expanded Inter glyphs and NFC normalization. The fon
 ## Talking back and forth
 
 Xiaozhi can answer ordinary conversation, not only device commands. Set the first wake-word
-slot's **Follow-up time** above zero (for example, 8 seconds). After an answer finishes playing,
-the device opens another listening turn; speak when **Listening** appears, without repeating the
-wake word. When the window has expired, say the wake word again. Zero disables automatic follow-up.
+slot's **Follow-up time** above zero (for example, 8 seconds). After an ordinary answer finishes
+playing, the device opens another listening turn; speak when **Listening** appears, without
+repeating the wake word. When the window has expired, say the wake word again. Zero disables
+automatic follow-up.
+ 
+Explicit whole-utterance closings such as **“vậy được rồi”** and **“tạm biệt”** end this back-and-forth.
+The closing answer still finishes playing, but the device does not automatically open **Listening**
+after it. Say **Marvin** again or start a new manual request to resume conversation; ordinary answers
+in the new conversation can open the usual 8-second follow-up again.
+
+This is a small, explicit phrase matcher, not general understanding of every possible goodbye.
+It recognizes “vậy được rồi”, “vậy là được rồi”, “thôi được rồi”, “vậy được rồi cảm ơn”,
+“vậy được rồi cảm ơn bạn”, “vậy được rồi cảm ơn đệ”, “được rồi cảm ơn”,
+“được rồi cảm ơn bạn”, “được rồi cảm ơn đệ”, “tạm biệt”, “dừng trò chuyện”, and
+“kết thúc trò chuyện”, ignoring case, Unicode accent composition, spacing, and punctuation.
+A question mark prevents a match.
+The closing must be the entire utterance: a longer request containing one of these phrases
+does not end the conversation. Plain “cảm ơn” or “được rồi” does not end it either.
 
 Follow-ups use the same **End of speech on the device** setting as wake-triggered turns. Leave
 it enabled for local/manual endpointing if the cloud does not end auto-mode turns reliably.
 The existing 30-second follow-up safety cap also applies in manual mode; background audio can
 extend a nominal no-speech window. Normal questions still end automatically after speech,
-without pressing Mute to submit them.
+without pressing Mute to submit them. Explicit-closing handling does not change that noise-only
+timeout or its 30-second safety cap.
 
 The agent's role, model and conversational memory belong to the Xiaozhi cloud account, not this
 listening timer. Configure them there if the agent treats everything as a command or forgets
-context. No Home Assistant or MCP tool is required for ordinary spoken conversation.
+context. No Home Assistant or MCP tool is required for ordinary spoken conversation. Closing
+handling changes neither MCP configuration nor cloud conversational memory.
 
 Stopping or losing a session now clears a pending Thinking/Replying screen even after the
 microphone has closed. Returning to Idle does not manufacture an answer when the cloud returned none.
