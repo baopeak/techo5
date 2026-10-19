@@ -52,3 +52,23 @@ func TestScreenTracksCaptureAndDoesNotInventFollowUp(t *testing.T) {
 		t.Fatalf("canceled capture: %+v", latest)
 	}
 }
+
+func TestStopClearsPendingResponseAfterMicrophoneClosed(t *testing.T) {
+	for _, phase := range []string{"thinking", "replying"} {
+		t.Run(phase, func(t *testing.T) {
+			var latest State
+			cancel := Changed.Listen(func(s State) { latest = s })
+			defer cancel()
+			startScreen()
+			finishScreen(true)
+			if phase == "replying" {
+				onScreenEvent(Event{Type: TypeTTS, State: TTSStart})
+			}
+			f := &Feature{}
+			f.Stop() // Also used when a session disconnects after capture has ended.
+			if latest.Phase != "idle" {
+				t.Fatalf("stopped response without an open microphone left phase %q", latest.Phase)
+			}
+		})
+	}
+}

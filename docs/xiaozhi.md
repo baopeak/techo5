@@ -50,6 +50,27 @@ Vietnamese screen text uses expanded Inter glyphs and NFC normalization. The fon
 [`textrun/vietnamese_test.go`](../echod/internal/lib/textrun/vietnamese_test.go), and the
 [`Xiaozhi tests`](../echod/internal/feature/xiaozhi/), including endpoint and screen lifecycle tests.
 
+## Talking back and forth
+
+Xiaozhi can answer ordinary conversation, not only device commands. Set the first wake-word
+slot's **Follow-up time** above zero (for example, 8 seconds). After an answer finishes playing,
+the device opens another listening turn; speak when **Listening** appears, without repeating the
+wake word. When the window has expired, say the wake word again. Zero disables automatic follow-up.
+
+Follow-ups use the same **End of speech on the device** setting as wake-triggered turns. Leave
+it enabled for local/manual endpointing if the cloud does not end auto-mode turns reliably.
+The existing 30-second follow-up safety cap also applies in manual mode; background audio can
+extend a nominal no-speech window. Normal questions still end automatically after speech,
+without pressing Mute to submit them.
+
+The agent's role, model and conversational memory belong to the Xiaozhi cloud account, not this
+listening timer. Configure them there if the agent treats everything as a command or forgets
+context. No Home Assistant or MCP tool is required for ordinary spoken conversation.
+
+Stopping or losing a session now clears a pending Thinking/Replying screen even after the
+microphone has closed. Returning to Idle does not manufacture an answer when the cloud returned none.
+
+
 ## Optional web search
 
 The [Exa MCP guide](xiaozhi-mcp.md) covers the separate, opt-in device service, private endpoint

@@ -108,7 +108,7 @@ func startScreen() {
 func finishScreen(waiting bool) {
 	screenMu.Lock()
 	defer screenMu.Unlock()
-	if waiting && current.Phase != "listening" {
+	if waiting && current.Phase != "listening" || !waiting && current.Phase == "idle" {
 		return
 	}
 	current.Phase = "idle"

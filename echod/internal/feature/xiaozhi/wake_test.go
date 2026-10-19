@@ -86,6 +86,81 @@ func TestTheModeFollowsTheSettingThatEndsASentence(t *testing.T) {
 	}
 }
 
+func TestFollowUpManualSpeechEndsAndSendsOneStop(t *testing.T) {
+	cl := connect(t)
+	if err := config.Set().Microphone().DeviceEnds(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.f.FollowUp(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	cl.f.mu.Lock()
+	id := cl.f.turn.id
+	cl.f.mu.Unlock()
+	cl.speech(t, 25)
+	cl.hush(t, 65)
+	cl.hangUp()
+	ended := cl.end(t, id)
+	if ended.EndSpeech < .4 || ended.EndSpeech > .8 {
+		t.Fatalf("follow-up lost its local speech endpoint: %+v", ended)
+	}
+	cl.cloud.waitStop(t)
+	if got := cl.cloud.stops(); got != 1 {
+		t.Fatalf("follow-up sent %d stops, want one", got)
+	}
+}
+
+func TestFollowUpAutoServerEndDoesNotSendAnotherStop(t *testing.T) {
+	cl := connect(t)
+	if err := config.Set().Microphone().DeviceEnds(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.f.FollowUp(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	cl.f.mu.Lock()
+	id := cl.f.turn.id
+	cl.f.mu.Unlock()
+	cl.speech(t, 25)
+	cl.cloud.waitAudio(t, "follow-up reached the server", 8)
+	cl.cloud.mu.Lock()
+	conn := cl.cloud.conn
+	cl.cloud.mu.Unlock()
+	if err := conn.WriteJSON(Event{Type: TypeSTT, Text: "A follow-up question"}); err != nil {
+		t.Fatal(err)
+	}
+	ended := cl.end(t, id)
+	if ended.EndSpeech != 0 || cl.f.Listening() {
+		t.Fatalf("server STT did not finish the follow-up: %+v", ended)
+	}
+	if got := cl.cloud.stops(); got != 0 {
+		t.Fatalf("server-ended follow-up sent %d redundant stops", got)
+	}
+}
+
+func TestManualFollowUpRetainsItsSafetyLimit(t *testing.T) {
+	cl := connect(t)
+	old := followUpMax
+	followUpMax = 100 * time.Millisecond
+	t.Cleanup(func() { followUpMax = old })
+	if err := config.Set().Microphone().DeviceEnds(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.f.FollowUp(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	cl.f.mu.Lock()
+	id := cl.f.turn.id
+	cl.f.mu.Unlock()
+	cl.speech(t, 25)
+	cl.cloud.waitAudio(t, "continuous audio reached the server", 8)
+	time.Sleep(150 * time.Millisecond)
+	cl.speech(t, 1)
+	if ended := cl.end(t, id); ended.Seconds >= 1 || ended.EndSpeech != 0 {
+		t.Fatalf("follow-up escaped its safety limit: %+v", ended)
+	}
+}
+
 // The handover is asked for before the array is taken, on every path that opens a turn. A path that
 // skipped it is a path where two backends can hold one microphone, and it would be the terminal's
 // path, which is the one nobody thinks about because nobody is holding a button when they use it.

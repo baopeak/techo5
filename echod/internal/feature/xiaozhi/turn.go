@@ -231,6 +231,9 @@ func (f *Feature) Stop() {
 		down.stop("it was interrupted")
 	}
 	if t == nil {
+		// Capture may already have ended while the screen still awaits this
+		// session's response. A stop or disconnect ends that pending state too.
+		finishScreen(false)
 		return
 	}
 
@@ -402,10 +405,10 @@ func (f *Feature) stream(ctx context.Context, t *turn) {
 					why = "the server never answered"
 					return
 				}
-				if t.followUp && time.Since(t.at) > followUpMax {
-					why = "the follow-up ran too long"
-					return
-				}
+			}
+			if t.followUp && time.Since(t.at) > followUpMax && !t.serverDone.Load() {
+				why = "the follow-up ran too long"
+				return
 			}
 
 			if err := t.up.feed(frame); err != nil {

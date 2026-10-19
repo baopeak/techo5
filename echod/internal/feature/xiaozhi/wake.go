@@ -322,8 +322,8 @@ func OnAnswered(fn func()) {
 	answered.fn = fn
 }
 
-// FollowUp opens a turn for d with no wake word behind it, and reports whether it did. The server
-// ends the utterance, and nothing said within d ends the turn: hearing nothing is a normal ending.
+// FollowUp opens a turn for d with no wake word behind it, using the same
+// end-of-speech setting as a wake turn. Hearing nothing within d ends it.
 func (f *Feature) FollowUp(d time.Duration) error {
 	if ready, why := f.BackendReady(); !ready {
 		return errors.New("xiaozhi cannot take a turn: " + why)
@@ -332,5 +332,5 @@ func (f *Feature) FollowUp(d time.Duration) error {
 		return errors.New("a turn is already open")
 	}
 	slog.Info("xiaozhi: listening again after the answer", "for", d)
-	return f.open(ListenAuto, 0, d, true)
+	return f.open(wakeMode(), 0, d, true)
 }
