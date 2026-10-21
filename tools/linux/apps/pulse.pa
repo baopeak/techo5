@@ -1,0 +1,6 @@
+# Private per-session UNIX socket under a user-only directory. No TCP listener,
+# no physical ALSA devices, and no microphone capture module.
+load-module module-native-protocol-unix socket=/run/user/1000/pulse/native auth-anonymous=1
+load-module module-null-sink sink_name=techo5 format=s16le rate=48000 channels=2 channel_map=front-left,front-right
+set-default-sink techo5
+set-default-source techo5.monitor

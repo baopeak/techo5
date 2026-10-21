@@ -105,6 +105,7 @@ const (
 )
 
 type Display struct {
+	apps localApps
 	// holdsMu makes reading whether holds are wanted and telling the touchscreen one step (applyHolds).
 	holdsMu sync.Mutex
 
@@ -519,8 +520,8 @@ func (d *Display) turnStyleSel() *esphome.Select { return d.turnStyle }
 func (d *Display) clockTapSel() *esphome.Select { return d.clockTap }
 
 func (d *Display) Entities() []esphome.Entity {
-	return []esphome.Entity{d.light, d.auto, d.clock, d.clockStyleSel, d.clockPos, d.dateCol, d.camTime, d.answerTime, d.turnStyle, d.callBtn, d.weatherFx, d.lang, d.strip, d.themeSel, d.nightHours, d.nightStart, d.nightEnd, d.nightMode, d.atNight, d.nightStyle, d.glowLevel, d.dimmestNum,
-		d.pop.on, d.pop.lead, d.pop.chime, d.pop.allDay, d.clockTap, d.styleSwipeSw, d.nightTapSw, d.fontSel}
+	return append([]esphome.Entity{d.light, d.auto, d.clock, d.clockStyleSel, d.clockPos, d.dateCol, d.camTime, d.answerTime, d.turnStyle, d.callBtn, d.weatherFx, d.lang, d.strip, d.themeSel, d.nightHours, d.nightStart, d.nightEnd, d.nightMode, d.atNight, d.nightStyle, d.glowLevel, d.dimmestNum,
+		d.pop.on, d.pop.lead, d.pop.chime, d.pop.allDay, d.clockTap, d.styleSwipeSw, d.nightTapSw, d.fontSel}, d.appEntities()...)
 }
 
 // Restore lights the panel the way it was left. Before the framebuffer is opened: the backlight is
@@ -906,6 +907,9 @@ func (d *Display) liftNightLight(by string) {
 // gesture is a finger on the panel. A dark screen only lights up; otherwise a tap is the action
 // button and a vertical swipe the volume.
 func (d *Display) gesture(g touch.Gesture) {
+	if d.apps.active() {
+		return // Xorg owns input until launcher cleanup has exited.
+	}
 	now := time.Now()
 	// A ring or a call is never behind the update dialog: it is not drawn over them, and a tap has to
 	// be able to stop the ring or work the call. So they are looked for before the dialog takes a tap.
@@ -2207,6 +2211,7 @@ func (d *Display) Start(context.Context) error {
 }
 
 func (d *Display) Close() error {
+	d.closeApps()
 	if d.dev == nil {
 		return nil
 	}
@@ -2218,6 +2223,9 @@ func (d *Display) Close() error {
 // Run redraws the screen until ctx is canceled: on the second while idle, faster while a turn is
 // on or the volume is showing, and at once when something changes.
 func (d *Display) Run(ctx context.Context) error {
+	defer d.closeApps()
+	tick := time.NewTimer(time.Hour)
+	defer tick.Stop()
 	go d.settle(ctx)
 	for {
 		wait := d.frame()
@@ -2229,11 +2237,18 @@ func (d *Display) Run(ctx context.Context) error {
 			}
 			continue
 		}
+		if !tick.Stop() {
+			select {
+			case <-tick.C:
+			default:
+			}
+		}
+		tick.Reset(wait)
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-d.poke:
-		case <-time.After(wait):
+		case <-tick.C:
 		}
 	}
 }
@@ -2241,6 +2256,9 @@ func (d *Display) Run(ctx context.Context) error {
 // frame draws what the moment calls for and says how long until the next one is due.
 func (d *Display) frame() time.Duration {
 	d.videoPainting, d.vp.dark = false, false
+	if d.appFrame(time.Now()) {
+		return appPoll
+	}
 	d.mu.Lock()
 	on, view, at := d.on, d.view, d.viewAt
 	volume, volAt := d.volume, d.volAt

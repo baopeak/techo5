@@ -1552,6 +1552,42 @@ data:
   entities: sensor.pixel_8_last_notification
 ```
 
+## Local Web browser and YouTube (Show only)
+
+When `/data/techo5-apps/bin/browser-session` is installed, Settings → Connections
+offers **Web browser** and **YouTube**. Matching ESPHome button object IDs are
+`screen_web_browser`, `screen_youtube`, and `screen_close_browser` (**Close browser**).
+Home Assistant may also use `button.press` on the discovered entity; it is not
+required to use the on-screen controls. These are buttons, not custom ESPHome actions.
+Installing the launcher after daemon startup
+requires a restart to advertise the new entities.
+
+The launcher and its writable parent directories must be root-owned, without
+symlinks or group/world write permission. An immutable firmware `/` is accepted
+with its archive owner only when a write-access check returns `EROFS`.
+The daemon executes only that fixed path with one
+argument, `web` or `youtube`, and a minimal environment (`PATH`, `HOME`, `LANG`).
+The launcher owns local Xorg, Firefox and the Vietnamese touch keyboard, runs in
+the foreground, and must trap TERM, terminate and reap all its children, restore
+the native framebuffer orientation, and only then exit. Children must stay in
+its process group; Firefox must run unprivileged with its sandbox enabled.
+Launcher stdout is exclusively raw signed 16-bit little-endian stereo PCM at
+48 kHz, routed through the existing native media mixer. Text diagnostics go to
+stderr/private logs; do not let a child print messages into that audio stream.
+The supplied runtime exposes no physical microphone or ALSA nodes.
+See [local-app installation, keyboard, playback limits and rollback](local-apps.md).
+
+Only one local session may own the screen. Native painting and touchscreen
+gestures pause during its lease, but microphone and audio services keep running.
+A voice turn, ringing alarm/timer, call, update dialog, PIN/setup prompt, or
+screen-off request closes the session. TERM escalates to a process-group KILL
+after three seconds. Native painting resumes only after the launcher is reaped
+and the group has exited, with every framebuffer page invalidated. Screenshot
+requests return a screen-unavailable error during the lease; use local Xorg
+capture for browser evidence. Startup and runtime failures are logged without
+browser output or inherited daemon credentials. This integration does not enable
+SSH or change device configuration.
+
 ## Set the night hours
 
 In YAML, refer to this action as `esphome.<node>_screen_night_hours`.

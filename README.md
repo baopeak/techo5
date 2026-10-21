@@ -1,4 +1,4 @@
-## baopeak fork: modern display, Vietnamese text and optional search
+## baopeak fork: modern display, Vietnamese text and local apps
 
 This is **[baopeak/techo5](https://github.com/baopeak/techo5)**, based on
 **[asmsaifs/techo5](https://github.com/asmsaifs/techo5)**, which builds on the original
@@ -18,6 +18,11 @@ Their features and credits are retained below; the upstream release badge is not
   All twelve original styles remain. Clock taps and horizontal style swipes are independent,
   so disabling tap-to-assist does not disable clock navigation.
   See [screen settings](docs/setup.md#6-the-screen).
+- **Optional local browser and YouTube on `crown`:** Firefox, a Vietnamese/English touch keyboard,
+  yt-dlp and software mpv run on the Echo itself. No laptop renderer or casting is needed.
+  A separate signed-Alpine runtime is required; public-video playback uses **Phát video**,
+  not Firefox's embedded YouTube player. Native screen ownership and full-page repaint prevent
+  stale black clock edges when returning from Xorg. See [setup, limits and rollback](docs/local-apps.md).
 - **Optional Exa MCP sidecar:** web search runs on the device, separately from `echod`, through
   Exa's official keyless MCP endpoint. No laptop, Exa API key or paid fallback is required;
   anonymous use is rate limited and the exact quota is unknown.

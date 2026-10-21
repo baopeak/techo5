@@ -57,18 +57,31 @@ func (m *Stream) offered(t *track, samples []int16) bool {
 // the phone takes the speaker again the moment it starts once more.
 const receiveQuiet = 5 * time.Second
 
+// ReceivedTrack identifies one PCM session, even after a replacement with the
+// same name. Stop also ends a listener-paused or voice-suspended session.
+type ReceivedTrack struct {
+	stream *Stream
+	track  *track
+}
+
+func (r ReceivedTrack) Stop() {
+	if r.track != nil {
+		r.stream.stopIf(func(t *track, _ bool) bool { return t == r.track })
+	}
+}
+
 // PlayPCM plays audio a remote is sending, replacing whatever was playing: the last thing started
 // wins, as on any speaker. Everything else about it is a track, so a turn ducks or pauses it, a reply
 // waits it out, and Home Assistant sees the speaker playing.
-func (m *Stream) PlayPCM(name string, src PCMSource, rate, channels int) {
+func (m *Stream) PlayPCM(name string, src PCMSource, rate, channels int) ReceivedTrack {
 	if m == nil {
 		_ = src.Close()
-		return
+		return ReceivedTrack{}
 	}
 	if rate <= 0 || channels < 1 || channels > 2 {
 		slog.Warn("cannot play received audio", "from", name, "rate", rate, "channels", channels)
 		_ = src.Close()
-		return
+		return ReceivedTrack{}
 	}
 
 	t, ctx := m.start(&track{item: name, received: true})
@@ -87,6 +100,7 @@ func (m *Stream) PlayPCM(name string, src PCMSource, rate, channels int) {
 			slog.Warn("received audio ended", "from", name, "err", err)
 		}
 	})
+	return ReceivedTrack{stream: m, track: t}
 }
 
 // Receiving is the name of what is being played from a remote, empty when the track is not one.
