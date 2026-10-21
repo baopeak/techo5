@@ -321,7 +321,8 @@ the Spot too, in its settings.
 
 - **Clock format**, **Clock position** and **Date color** (Date color on the Show only). Clock
   position puts a smaller clock in a bottom corner, so a photo stays in view. Every style goes there
-  except *Dashboard*, *Agenda* and *World*, which keep the whole screen. On the Spot, Clock position is
+  except *Dashboard*, *Agenda*, *World* and the Show's *Poster*, *Orbit*, *Mosaic* and *Almanac*,
+  which keep the whole clock area. On the Spot, Clock position is
   *Center* or *Bottom*: the *Classic*, *Flip*, *LED*, *Sun* and *Glow* styles go small at the foot of
   the circle, and the others stay in the middle. Also in Home Assistant.
 - **Clock style**: how the clock looks all day. *Classic*, *Big*, *Flip*, *LED*, *Analog*, *Words*
@@ -334,6 +335,17 @@ the Spot too, in its settings.
   across the clock for the next style or the one before; its name shows for a moment, and a swipe
   the other way puts the last style back. The night clock keeps its own look. Also in Home Assistant
   and on the setup page's Screen & Photos tab.
+  The Show has four additional full-panel compositions, available in Light/Dark and existing themes:
+  **Poster** uses giant stacked hour/minute typography; **Orbit** uses minute-stepped hour/minute
+  progress rings; **Mosaic** forms four digits from 24 small clock dials; **Almanac** combines the
+  current date and time with a Monday-first month grid, including leap years and today's highlight.
+  These do not need weather, calendar synchronization, a browser or Home Assistant. Music and timers
+  keep their reserved space. Date labels follow the existing screen language and selected font;
+  Vietnamese glyph support is not a full translation of the clock's English labels.
+  Mosaic takes inspiration from [Humans since 1982's ClockClock 24](https://www.humanssince1982.com/en-int/products/clockclock-24-white);
+  Orbit references the [polar clock display tradition](https://ripplered.info/).
+  These are independent framebuffer implementations, not affiliated products or imported assets.
+  Unlike the kinetic artwork, Mosaic displays time continuously without choreography.
 - **Font**: the font of every word the screen draws: the clock, the date, the weather, the settings
   and the rest (not the icons). *Go*, the screen's own and the default, *Inter*, *MuseoModerno*,
   *Exo*, *Overpass*, *Saira*, *Comic Neue*, *Open Sans* or *Google Sans Flex*. Each is sized so a line

@@ -111,6 +111,14 @@ func (r *renderer) styledClock(s scene, style string) {
 		r.agendaStyle(s, box)
 	case styleGlow:
 		r.glowStyle(s, box)
+	case stylePoster:
+		r.posterStyle(s, box)
+	case styleOrbit:
+		r.orbitStyle(s, box)
+	case styleMosaic:
+		r.mosaicStyle(s, box)
+	case styleAlmanac:
+		r.almanacStyle(s, box)
 	}
 	if glance {
 		r.glanceStrip(s.glance, s.callButton)
@@ -717,7 +725,12 @@ func dashWhen(e hass.Event, now time.Time) (day, hhm string) {
 // Dashboard, the Agenda and World are pages of their own rather than a clock, and keep the whole
 // screen.
 func cornerStyle(style string) bool {
-	return style != styleDashboard && style != styleAgenda && style != styleWorld
+	switch style {
+	case styleDashboard, styleAgenda, styleWorld, stylePoster, styleOrbit, styleMosaic, styleAlmanac:
+		return false
+	default:
+		return true
+	}
 }
 
 // cornerPct is the share of the width a style gets in a corner, the most of it the date may take.

@@ -13,8 +13,10 @@ Their features and credits are retained below; the upstream release badge is not
   follow-ups. Manual end-of-speech allows **1.2 seconds of quiet** between phrases.
   See [Xiaozhi setup](docs/xiaozhi.md).
 - **Modern native Show interface:** flatter Settings controls and refreshed daytime clock faces,
-  with paired **Light/Dark** themes. All twelve style IDs remain; clock taps and horizontal style
-  swipes are independent, so disabling tap-to-assist does not disable clock navigation.
+  with paired **Light/Dark** themes. The Show also adds **Poster**, **Orbit**, **Mosaic** and
+  **Almanac**: stacked typography, progress rings, a 24-dial digit matrix and a real month calendar.
+  All twelve original styles remain. Clock taps and horizontal style swipes are independent,
+  so disabling tap-to-assist does not disable clock navigation.
   See [screen settings](docs/setup.md#6-the-screen).
 - **Optional Exa MCP sidecar:** web search runs on the device, separately from `echod`, through
   Exa's official keyless MCP endpoint. No laptop, Exa API key or paid fallback is required;
