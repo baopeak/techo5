@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
-"""Play a public YouTube watch URL locally with yt-dlp and software X11 mpv.
+"""Extract a public YouTube URL locally and hand it to TECHO5's native player.
 
-Invoked by keyboard.py with one HTTPS YouTube URL and optional --geometry.
-No cookies, account, persistent download, shell, or external rendering. The
-extractor uses QuickJS and selects H.264 <=480p plus AAC/Opus audio. Missing
-compatible formats are an error, not an untested codec fallback. All diagnostic
-output is suppressed to avoid exposing signed media URLs. Exit 0 means mpv
-finished normally, 2 invalid URL, 3 extraction/format failure, 4 player failure.
-SIGTERM/SIGINT terminate and reap the owned child; no process-group signals.
-Extraction has a 75-second deadline. The launcher must monitor keyboard.py and
-own the surrounding session process group. Hardware playback is not implied.
+Invoked by keyboard.py with one HTTPS YouTube URL. No cookies, downloads,
+shell, external rendering or X11 video decoder. QuickJS/yt-dlp select H.264
+<=480p and AAC/Opus. The inherited fd3 carries one bounded native-video request;
+stdout carries only a fixed status token, never signed media URLs.
+Exit 0 means handoff sent, 2 invalid URL, 3 extraction failure, 4 unavailable
+handoff. Extraction has a 75-second deadline; cancellation reaps its child.
 """
 
 import json
+import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 from urllib.parse import parse_qs, urlsplit
@@ -101,34 +100,34 @@ def main(argv):
     extracting = bool(argv and argv[0] == "--extract")
     if extracting:
         argv = argv[1:]
-    if not argv or len(argv) > (1 if extracting else 2):
+    if len(argv) != 1:
         return 2
     try:
         url = validate_url(argv[0])
     except (ValueError, TypeError):
         return 2
+
     def stop(signum, frame):
-        # Cancellation is idempotent, including while terminating/reaping mpv.
+        # A second Stop must not interrupt terminate/wait/kill/reap.
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         signal.signal(signal.SIGINT, signal.SIG_IGN)
-        # Raise through Python context managers, including yt-dlp's JS runner,
-        # so extraction cancellation can clean up its own runtime subprocess.
         raise SystemExit(128 + signum)
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     if extracting:
         try:
-            result = extract(url)
-            sys.stdout.write(json.dumps(result))
+            sys.stdout.write(json.dumps(extract(url)))
             return 0
         except Exception:
             return 3
-    geometry = argv[1] if len(argv) == 2 else "1280x660+0+0"
-    if not re.fullmatch(r"\d{2,4}x\d{2,4}\+0\+0", geometry):
-        return 2
-    child = None
+    try:
+        if os.environ.get("TECHO5_VIDEO_FD") != "3" or not stat.S_ISFIFO(os.fstat(3).st_mode):
+            return 4
+    except OSError:
+        return 4
 
+    child = None
     try:
         child = subprocess.Popen([sys.executable, __file__, "--extract", url],
                                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -143,18 +142,16 @@ def main(argv):
             video, audio = json.loads(data)
         except (ValueError, TypeError):
             return 3
-        command = ["mpv", "--no-config", "--vo=x11", "--hwdec=no", "--ao=pulse",
-                   "--keep-open=no", "--title=TECHO5Video", "--geometry=" + geometry,
-                   "--autofit=" + geometry.split("+")[0], "--ytdl=no", "--no-terminal",
-                   "--input-default-bindings=yes", "--osd-level=1"]
-        if audio:
-            command.append("--audio-file=" + audio)
-        command += ["--", video]
-        child = subprocess.Popen(command, stdin=subprocess.DEVNULL,
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        # A fixed token only: never expose extracted URLs or exception text.
-        print("PLAYING", flush=True)
-        return 0 if child.wait() == 0 else 4
+        request = json.dumps({"url": video, "audio_url": audio or ""},
+                             separators=(",", ":")).encode() + b"\n"
+        if len(request) > 64 * 1024:
+            return 3
+        # No shared framebuffer writer: native playback starts only after the
+        # supervisor has reaped Xorg and the daemon invalidates its page caches.
+        with os.fdopen(3, "wb") as channel:
+            channel.write(request)
+        print("NATIVE_HANDOFF", flush=True)
+        return 0
     except (OSError, ValueError):
         return 4
     finally:

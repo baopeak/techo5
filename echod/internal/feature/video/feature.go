@@ -54,6 +54,7 @@ type Feature struct {
 	panelW   int
 	panelH   int
 	seq      uint64
+	lastID   uint64
 	cur      *session
 	ask      *ask
 	notNow   map[string]time.Time
@@ -234,6 +235,16 @@ func (f *Feature) Play(req Request) (uint64, error) {
 		return 0, errors.New("the device does not fetch from itself")
 	}
 	req.URL = u.String()
+	if req.AudioURL != "" {
+		audio, err := CheckURL(req.AudioURL)
+		if err != nil {
+			return 0, err
+		}
+		if ownHost(audio.Hostname()) {
+			return 0, errors.New("the device does not fetch from itself")
+		}
+		req.AudioURL = audio.String()
+	}
 	f.mu.Lock()
 	if f.panelW == 0 {
 		f.mu.Unlock()
@@ -287,6 +298,7 @@ func (f *Feature) begin(id uint64, req Request) {
 	s.ended, s.changed = f.sessionEnded, func() { f.Changed.Emit(struct{}{}) }
 	// Whatever covered the last video is told again for this one by the next frame.
 	f.cur, f.ask, f.heldByUs, f.covered = s, nil, false, false
+	f.lastID = id
 	insecure := config.Get().Diag.InsecureTLS
 	f.mu.Unlock()
 	if old != nil {
@@ -462,7 +474,7 @@ func (f *Feature) Covered(on bool) {
 func (f *Feature) State() State {
 	f.mu.Lock()
 	s, a := f.cur, f.ask
-	st := State{Phase: Idle, Ended: f.ended, Failed: f.failed, Err: f.err, ErrAt: f.errAt}
+	st := State{Phase: Idle, LastID: f.lastID, Ended: f.ended, Failed: f.failed, Err: f.err, ErrAt: f.errAt}
 	if a != nil {
 		st.AskID = a.id
 	}

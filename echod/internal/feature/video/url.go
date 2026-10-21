@@ -83,17 +83,12 @@ func Host(u *url.URL) string {
 	return u.Hostname()
 }
 
-// Redacted is the address for the log: no password, and no query, which is where media servers put
-// their tokens (Plex's X-Plex-Token, Jellyfin's api_key).
+// Redacted keeps only the origin for diagnostics. Credentials may appear in
+// paths as well as userinfo/query strings, especially signed HLS manifests.
 func Redacted(u *url.URL) string {
 	if u == nil {
 		return ""
 	}
-	c := *u
-	c.User = nil
-	if c.RawQuery != "" {
-		c.RawQuery = "…"
-	}
-	c.Fragment = ""
+	c := url.URL{Scheme: u.Scheme, Host: u.Host}
 	return c.String()
 }

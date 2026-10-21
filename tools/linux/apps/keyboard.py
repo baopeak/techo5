@@ -118,6 +118,7 @@ def main():
             self.child = None
             self.player = None
             self.player_stopping = False
+            self.player_handoff = False
             self.reading_video = False
             self.video_request = 0
             self.closed = False
@@ -152,13 +153,15 @@ def main():
             self.button("URL", lambda: self.send_keys("ctrl+l"), toolbar)
             self.button("Lùi", lambda: self.send_keys("alt+Left"), toolbar)
             self.button("Tiến", lambda: self.send_keys("alt+Right"), toolbar)
+            self.button("Cuộn lên", lambda: self.scroll_page(4), toolbar)
+            self.button("Cuộn xuống", lambda: self.scroll_page(5), toolbar)
             self.button("YouTube", self.youtube, toolbar)
             self.play_button = self.button("Phát video", self.play_video, toolbar)
-            self.stop_button = self.button("Dừng video", self.stop_video, toolbar)
+            self.stop_button = self.button("Hủy mở video", self.stop_video, toolbar)
             self.stop_button.set_sensitive(False)
             self.button("Đóng", self.close_browser, toolbar)
             self.panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
-            self.video_status = Gtk.Label(label="YouTube: mở video trên trang → Phát video")
+            self.video_status = Gtk.Label(label="YouTube: mở video → Phát video ở thanh này, không dùng Play trong trang")
             self.video_status.get_style_context().add_class("hint")
             self.root.pack_start(self.video_status, False, False, 0)
             self.root.pack_start(self.panel, False, False, 0)
@@ -357,6 +360,14 @@ def main():
         def send_keys(self, key):
             self.browser_action([(["xdotool", "key", "--clearmodifiers", key], None)])
 
+        def scroll_page(self, wheel):
+            # Wheel events target page content, not the focused search field.
+            self.browser_action([
+                (["xdotool", "key", "--clearmodifiers", "Escape"], None),
+                (["xdotool", "mousemove", str(self.width // 2), "250"], None),
+                (["xdotool", "click", "--repeat", "4", "--delay", "80", str(wheel)], None),
+            ])
+
         def clipboard_step(self, text):
             def own_clipboard():
                 self.clipboard.set_text(text, -1)
@@ -385,6 +396,9 @@ def main():
         def play_video(self):
             if self.player is not None or self.reading_video:
                 return
+            if os.environ.get("TECHO5_VIDEO_FD") != "3":
+                self.video_status.set_text("Trình phát native cần bản daemon mới có hỗ trợ chuyển video.")
+                return
             self.reading_video = True
             self.video_request += 1
             token = self.video_request
@@ -409,20 +423,20 @@ def main():
                     return
                 if self.expanded:
                     self.toggle_keyboard()
-                geometry = f"{self.width}x{max(240, self.screen.get_height() - 120)}+0+0"
                 try:
                     self.player = subprocess.Popen(
                         [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "player.py"),
-                         url, geometry], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                        stderr=subprocess.DEVNULL, close_fds=True)
+                         url], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL, close_fds=True, pass_fds=(3,))
                     os.set_blocking(self.player.stdout.fileno(), False)
                 except OSError:
                     self.play_button.set_sensitive(True)
                     self.video_status.set_text("Không khởi động được trình phát video.")
                     return
                 self.player_stopping = False
+                self.player_handoff = False
                 self.stop_button.set_sensitive(True)
-                self.video_status.set_text("Đang lấy luồng YouTube… Dừng video để hủy.")
+                self.video_status.set_text("Đang lấy luồng YouTube… Hủy mở video để dừng.")
                 GLib.timeout_add(200, self.poll_player)
 
             def request():
@@ -458,8 +472,9 @@ def main():
                 progress = os.read(self.player.stdout.fileno(), 256)
             except BlockingIOError:
                 progress = b""
-            if b"PLAYING" in progress and not self.player_stopping:
-                self.video_status.set_text("Đã mở trình phát trên thiết bị. Dừng video để về Firefox.")
+            if b"NATIVE_HANDOFF" in progress and not self.player_stopping:
+                self.player_handoff = True
+                self.video_status.set_text("Đang chuyển sang trình phát native của Echo…")
             status = self.player.poll()
             if status is None:
                 return True
@@ -468,12 +483,17 @@ def main():
             self.player = None
             self.play_button.set_sensitive(True)
             self.stop_button.set_sensitive(False)
-            if status == 0 or self.player_stopping:
-                self.video_status.set_text("Đã kết thúc video. Tiếp tục dùng Firefox.")
+            if status == 0 and not self.player_stopping:
+                self.player_handoff = True
+                self.play_button.set_sensitive(False)
+                self.video_status.set_text("Đang chuyển sang trình phát native của Echo…")
+            elif self.player_stopping:
+                self.video_status.set_text("Đã hủy mở video. Tiếp tục dùng Firefox.")
             else:
                 self.video_status.set_text("Không phát được video công khai tương thích. Firefox vẫn mở.")
             self.player_stopping = False
-            self.browser_action([])
+            if not self.player_handoff:
+                self.browser_action([])
             return False
 
         def close_browser(self):

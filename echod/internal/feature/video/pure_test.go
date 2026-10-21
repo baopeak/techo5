@@ -79,11 +79,22 @@ func TestTheLogNeverHasTheSecrets(t *testing.T) {
 	if strings.Contains(r, "secret") || strings.Contains(r, "token") || strings.Contains(r, "user") {
 		t.Errorf("redacted: %s", r)
 	}
-	if !strings.Contains(r, "192.168.1.20:8096/Videos/1/stream.mp4") {
-		t.Errorf("redacted too much: %s", r)
-	}
 	if Host(u) != "192.168.1.20" {
 		t.Errorf("host %q", Host(u))
+	}
+}
+
+func TestSignedMediaPathsDoNotReachLogs(t *testing.T) {
+	u, err := CheckURL("https://secret_user:secret_password@cdn.example.com/api/manifest/secret_path/signature/secret_signature/playlist.m3u8?token=secret_query#secret_fragment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	redacted := Redacted(u)
+	if strings.Contains(redacted, "secret_") || strings.Contains(redacted, "manifest") {
+		t.Fatalf("signed media data escaped into diagnostics: %s", redacted)
+	}
+	if !strings.Contains(redacted, "cdn.example.com") {
+		t.Fatalf("diagnostic origin was lost: %s", redacted)
 	}
 }
 

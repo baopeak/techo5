@@ -19,9 +19,11 @@ Their features and credits are retained below; the upstream release badge is not
   so disabling tap-to-assist does not disable clock navigation.
   See [screen settings](docs/setup.md#6-the-screen).
 - **Optional local browser and YouTube on `crown`:** Firefox, a Vietnamese/English touch keyboard,
-  yt-dlp and software mpv run on the Echo itself. No laptop renderer or casting is needed.
-  A separate signed-Alpine runtime is required; public-video playback uses **Phát video**,
-  not Firefox's embedded YouTube player. Native screen ownership and full-page repaint prevent
+  yt-dlp and TECHO5's native full-screen video player run on the Echo itself. No laptop renderer
+  or casting is needed. The touch keyboard includes explicit page-scroll controls.
+  A separate signed-Alpine runtime is required; **Phát video** hands playback from the browser
+  to the native player instead of Firefox's embedded decoder or the slower mpv/Xorg path.
+  Native screen ownership and full-page repaint prevent
   stale black clock edges when returning from Xorg. See [setup, limits and rollback](docs/local-apps.md).
 - **Optional Exa MCP sidecar:** web search runs on the device, separately from `echod`, through
   Exa's official keyless MCP endpoint. No laptop, Exa API key or paid fallback is required;

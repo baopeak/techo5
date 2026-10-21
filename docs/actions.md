@@ -1566,7 +1566,8 @@ The launcher and its writable parent directories must be root-owned, without
 symlinks or group/world write permission. An immutable firmware `/` is accepted
 with its archive owner only when a write-access check returns `EROFS`.
 The daemon executes only that fixed path with one
-argument, `web` or `youtube`, and a minimal environment (`PATH`, `HOME`, `LANG`).
+argument, `web` or `youtube`, and a minimal environment (`PATH`, `HOME`, `LANG`,
+`TECHO5_VIDEO_FD=3`).
 The launcher owns local Xorg, Firefox and the Vietnamese touch keyboard, runs in
 the foreground, and must trap TERM, terminate and reap all its children, restore
 the native framebuffer orientation, and only then exit. Children must stay in
@@ -1575,6 +1576,13 @@ Launcher stdout is exclusively raw signed 16-bit little-endian stereo PCM at
 48 kHz, routed through the existing native media mixer. Text diagnostics go to
 stderr/private logs; do not let a child print messages into that audio stream.
 The supplied runtime exposes no physical microphone or ALSA nodes.
+The optional fd3 pipe accepts one newline-terminated JSON object containing
+`url` and optional `audio_url`, at most 64 KiB including the newline. The supplied
+launcher passes this pipe only to the keyboard/extractor, never Firefox. Native
+video starts only on a later frame after the Xorg group has exited and framebuffer
+shadows have been invalidated. The existing Video permission and restricted
+FFmpeg/network path apply to both inputs. Native Stop returns to the originating
+browser unless priority or an actually begun replacement video cancels that return.
 See [local-app installation, keyboard, playback limits and rollback](local-apps.md).
 
 Only one local session may own the screen. Native painting and touchscreen

@@ -101,9 +101,10 @@ const protocols = "http,https,tcp,tls,hls,crypto"
 
 // Decoding is how the decoder is run: what to fetch and from where, and how.
 type Decoding struct {
-	URL    string
-	Info   Info
-	Screen Screen
+	URL      string
+	AudioURL string
+	Info     Info
+	Screen   Screen
 
 	// CAFile is where the certificate authorities are, empty for OpenSSL's own default; Insecure
 	// stops certificates being checked (the device's own Insecure TLS setting).
@@ -208,11 +209,18 @@ func DecodeArgs(d Decoding) []string {
 	// deblocking) make ffmpeg 8 refuse to open the picture's output when given on its command line.
 	a = append(a, "-threads", strconv.Itoa(t))
 	a = append(a, "-i", d.URL)
+	audioInput := "0"
+	if d.AudioURL != "" {
+		a = append(a, "-max_pixels", maxPixels)
+		a = append(a, netArgs(d.AudioURL, d.CAFile, d.Insecure, d.Proxy)...)
+		a = append(a, "-i", d.AudioURL)
+		audioInput = "1"
+	}
 	a = append(a, "-map", "0:v:"+strconv.Itoa(d.Info.VideoIndex), "-an", "-sn", "-dn",
 		"-vf", Filter(d.Info, d.Screen), "-fps_mode", "passthrough",
 		"-f", "rawvideo", "-pix_fmt", pixOr(d.Screen.PixFmt), "pipe:3")
 	if d.Info.AudioIndex >= 0 {
-		a = append(a, "-map", "0:a:"+strconv.Itoa(d.Info.AudioIndex), "-vn", "-sn", "-dn",
+		a = append(a, "-map", audioInput+":a:"+strconv.Itoa(d.Info.AudioIndex), "-vn", "-sn", "-dn",
 			"-af", soundFilter, "-ac", strconv.Itoa(soundChannels), "-ar", strconv.Itoa(soundRate),
 			"-f", "s16le", "pipe:1")
 	}

@@ -9,18 +9,21 @@ With the separate application runtime installed, open **Settings → Connections
 - Touch a web field, compose text in the keyboard, then **Dán** or **Tìm / Enter**. **URL** focuses the address bar.
 - **VI** switches Vietnamese/English. Vietnamese has explicit `ă â đ ê ô ơ ư` and tone keys, not Telex. Apply the tone immediately after its target vowel; composition is normalized to NFC. Backspace handles combining marks and common emoji clusters.
 - **Ẩn phím / Bàn phím** collapses/expands the keyboard while retaining navigation and video controls. Touch targets are at least 48 pixels.
-- On a public YouTube watch page, press **Phát video**. The Echo extracts a compatible stream and opens its local software video player. **Dừng video** cancels extraction or playback and returns to Firefox.
+- **Cuộn lên / Cuộn xuống** scroll the page without needing a mouse wheel. Firefox is started with XInput2 touch support; use these explicit controls if one-finger dragging selects text instead of scrolling on this platform.
+- On a public YouTube watch page, press **Phát video** on the bottom toolbar, not Play inside the website. **Hủy mở video** cancels extraction. After extraction the browser closes and TECHO5's existing native full-screen video player takes over. Tap the picture for its controls; stopping the native video returns to the browser unless a higher-priority screen has taken over.
 - **Đóng** exits the browser and returns to the native screen. Screen-off and higher-priority native activities also close the application session rather than sharing the framebuffer concurrently.
 
 ## What has actually been exercised
 
-On `crown`, Firefox ESR rendered Google and a real Vietnamese `đà lạt` search entered through the GTK keyboard. A public YouTube clip (`jNQXAC9IVRw`) played through local mpv: two timed framebuffer captures showed different video frames, and the private synthetic audio monitor contained nonzero PCM. This is not a claim that every YouTube video or website works, nor a physical listening test of speaker volume.
+On `crown`, Firefox ESR rendered Google and a real Vietnamese `đà lạt` search entered through the GTK keyboard. The page-scroll control moved a real Firefox page by 480 pixels. A public 854×480/25 fps YouTube clip (`0aMwGDsoOfc`) was severely presentation-limited through the initial mpv/Xorg prototype: 153 output frames dropped in ten seconds while decoding dropped none and the network cache stayed full. The native player subsequently logged 250 and 249 presented frames in consecutive ten-second intervals, with zero dropped frames; the device owner also reported that full-screen playback ran well. These are observations for that scenario, not a claim that every video/website works.
 
-The browser's own YouTube media utility crashed on the device's old kernel/runtime. **The tested playback path is the separate Phát video button**, not Firefox's embedded Play button. The decoder selects H.264 at no more than 480p plus AAC/Opus; the verified sample was a low-resolution clip. DRM, paid/account-restricted videos and universal 720p/1080p playback are not supported claims. Internet access and a currently working YouTube extractor remain necessary.
+The browser's own YouTube media utility crashed in the tested environment. **The supported playback path is the separate Phát video button followed by native full-screen playback**; mpv/Xorg video rendering has been removed from the application path. The extractor selects H.264 at no more than 480p plus AAC/Opus. DRM, paid/account-restricted videos and universal 720p/1080p playback are not supported claims. Internet access and a currently working YouTube extractor remain necessary.
 
 ## Runtime layout and preparation
 
 The firmware supplies the native screen handoff, not a bundled browser rootfs. Source configuration is in `tools/linux/apps/`:
+
+Native playback also requires the existing **Video** permission switch and the bundled `/usr/local/bin/techo5-ffmpeg`. Enable Video once through Web Setup's Video section or the authenticated native API; DLNA can remain off. The local application does not bypass that permission or enable incoming DLNA requests.
 
 | Source | Installed destination |
 | --- | --- |
@@ -52,17 +55,26 @@ Create the runtime-only `browser` account with UID/GID **1000**, home `/home/bro
 
 The launcher supplies transient private `/dev`, `/proc` and `/sys` mounts; it does not bind the host's `/data` into the application root. Its framebuffer/input node numbers and rotation are **crown-specific**. Reboot removes these mounts; opening the browser recreates them.
 
+On crown, `xorg.conf` uses **Rotate CW**, paired with libinput calibration
+`0 1 0 -1 0 1 0 0 1`. CCW produced a real upside-down panel even though X11
+screenshots looked upright. Verify orientation against the native clock using
+the physical framebuffer, not XWD alone; verify physical touch targets afterward.
+Do not reverse the touch matrix merely because the display rotation changes:
+the display framebuffer and touch controller have different native orientations.
+
 ## Display, audio and security boundaries
 
 Native rendering pauses while the local session owns the display. After its managed process group has exited, all framebuffer pages are invalidated and repainted. This fixes stale black side edges when returning from Xorg to the clock, without changing the clock design or theme.
 
-Firefox, GTK, PulseAudio, yt-dlp and mpv run as UID 1000. Xorg alone needs root for the old framebuffer/input devices. It remains in the managed process group (`-keeptty`), has per-session Xauthority, and does not listen on TCP. Profile writes happen after dropping privileges. The session supervisor reaps descendants on exit; a missing keyboard is a fatal session failure.
+Firefox, GTK, PulseAudio and yt-dlp run as UID 1000. Xorg needs root for the old framebuffer/input devices. It remains in the managed process group (`-keeptty`), has per-session Xauthority, and does not listen on TCP. Profile writes happen after dropping privileges. The session supervisor reaps descendants on exit; a missing keyboard is a fatal session failure. The native FFmpeg decoder uses the existing separately restricted video process and network guard.
 
 The private app root has **no physical ALSA/microphone device nodes**. PulseAudio renders to a private null sink; only that synthetic monitor goes through a pipe to TECHO5's existing media mixer/AEC and speaker path. Firefox does not seize the physical speaker. No microphone recording is added.
 
+YouTube video is not rendered concurrently with Xorg. The extractor sends one newline-terminated JSON request on inherited **fd3**, bounded to 64 KiB including the newline. Only the supervisor, keyboard and extractor inherit that pipe, never Firefox. The daemon accepts at most one frame per browser lease, validates both media addresses, reaps the Xorg process group, invalidates framebuffer shadows, and only then starts native playback. Separate audio uses the same URL/network/TLS and pixel-allocation protections as video; advertised audio that produces no PCM fails instead of silently playing a picture. Native playback retains the original speaker/mixer/AEC path and native controls.
+
 The Firefox content sandbox remains enabled; no sandbox-disable flags or preferences are used. Nevertheless, Linux 4.9 and the absence of modern namespaces are a real security limitation. Firefox displays its OS-protection warning. This experimental setup is not a recommendation for banking, valuable account sessions or untrusted sensitive browsing. A chroot is not a complete security sandbox.
 
-Logs remain root-private at `/data/techo5-apps/logs/session.log`. The local player suppresses signed media URLs and does not persist downloaded videos or account cookies. Firefox retains its ordinary local profile/history.
+Logs remain root-private at `/data/techo5-apps/logs/session.log`. Video diagnostics keep only URL origins: signed paths, query strings, userinfo and fragments are omitted. The extractor does not persist downloaded videos or account cookies. Firefox retains its ordinary local profile/history.
 
 ## Update and rollback
 

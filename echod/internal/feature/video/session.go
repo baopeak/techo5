@@ -81,8 +81,9 @@ type session struct {
 	// clock was when it last started or stopped, wallFrom when it started (zero while it is stopped).
 	sound      bool
 	src        *soundSource
-	soundIn    bool // the sound's pipe has ended
-	soundGone  bool // the speaker was taken from it: the video is over
+	soundIn    bool  // the sound's pipe has ended
+	soundErr   error // explicitly separate sound ended without supplying any PCM
+	soundGone  bool  // the speaker was taken from it: the video is over
 	wallBase   time.Duration
 	wallFrom   time.Time
 	wallPaused bool // a video with no sound, or with its sound run out, paused
@@ -125,6 +126,9 @@ func (s *session) run(insecure bool) {
 	s.cancel()
 	s.mu.Lock()
 	dec := s.dec
+	if s.soundErr != nil {
+		err, itself = s.soundErr, false
+	}
 	s.videoIn = true
 	// The frames go with the session: some 22 MB, which nothing reads again. A frame the screen still
 	// has comes back to a list nobody takes from, and goes with it.
@@ -179,6 +183,16 @@ func (s *session) play(insecure bool) (error, bool) {
 	if err != nil {
 		return err, false
 	}
+	if s.req.AudioURL != "" {
+		audio, err := probeMedia(s.ctx, s.req.AudioURL, insecure, proxy, true)
+		if s.ctx.Err() != nil {
+			return nil, false
+		}
+		if err != nil {
+			return err, false
+		}
+		info.AudioIndex, info.AudioCodec = audio.AudioIndex, audio.AudioCodec
+	}
 	s.mu.Lock()
 	s.info, s.rate = info, FrameRate(info.FPS)
 	s.sound = info.AudioIndex >= 0
@@ -190,7 +204,7 @@ func (s *session) play(insecure bool) (error, bool) {
 		"probed in", time.Since(began).Round(time.Millisecond))
 	s.changed()
 
-	dec, err := start(s.ctx, DecodeArgs(Decoding{URL: s.u.String(), Info: info, Screen: s.screen, CAFile: caFileIf(), Insecure: insecure, Proxy: proxy}), true, s.sound)
+	dec, err := start(s.ctx, DecodeArgs(Decoding{URL: s.u.String(), AudioURL: s.req.AudioURL, Info: info, Screen: s.screen, CAFile: caFileIf(), Insecure: insecure, Proxy: proxy}), true, s.sound)
 	if err != nil {
 		return err, false
 	}
@@ -200,12 +214,23 @@ func (s *session) play(insecure bool) (error, bool) {
 
 	if s.sound {
 		src := &soundSource{f: dec.audio, s: s, quit: make(chan struct{})}
+		if s.req.AudioURL != "" {
+			src.firstDone = make(chan struct{})
+		}
 		s.mu.Lock()
 		s.src = src
 		s.mu.Unlock()
 		safe.Go("video sound", src.begin)
 	}
 	readErr := s.readFrames(dec.video)
+	// Drain the picture while the first PCM read runs: waiting before readFrames could deadlock
+	// the decoder on its full picture pipe. Do not declare success before that read finishes.
+	if s.req.AudioURL != "" {
+		select {
+		case <-s.src.firstDone:
+		case <-s.ctx.Done():
+		}
+	}
 	if s.ctx.Err() != nil {
 		return nil, false
 	}
@@ -486,9 +511,10 @@ func (s *session) numbers() (shown, dropped int, started bool) {
 // the picture can carry on and what was queued plays out, and tells the session when the track was
 // taken from it (Close from the media player: something else is playing).
 type soundSource struct {
-	f    *os.File
-	s    *session
-	quit chan struct{}
+	f         *os.File
+	s         *session
+	quit      chan struct{}
+	firstDone chan struct{} // first read/track handover completed
 
 	mu      sync.Mutex
 	first   []byte
@@ -506,9 +532,22 @@ var soundTurns sync.Mutex
 
 // begin waits for the first of the sound, and plays it as a received track.
 func (a *soundSource) begin() {
+	if a.firstDone != nil {
+		defer close(a.firstDone)
+	}
 	buf := make([]byte, 16384)
 	n, err := a.f.Read(buf)
 	if err != nil || n == 0 {
+		if a.s.req.AudioURL != "" {
+			a.s.mu.Lock()
+			if a.s.ctx.Err() == nil {
+				a.s.soundErr = errors.New("the separate audio input ended before supplying sound")
+				a.s.cancel()
+				a.s.cond.Broadcast()
+			}
+			a.s.mu.Unlock()
+			return
+		}
 		a.s.soundOut()
 		return
 	}

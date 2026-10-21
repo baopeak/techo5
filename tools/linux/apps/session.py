@@ -101,10 +101,11 @@ def prepare_browser():
             fd = os.open('user.js', os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
                          0o600, dir_fd=profile)
             with os.fdopen(fd, 'w') as prefs:
-                # Keep the content sandbox enabled. Only rendering and quit prompts change.
+                # Keep the content sandbox enabled; use real X11 touch events.
                 prefs.write('user_pref("browser.warnOnQuit", false);\n'
                             'user_pref("browser.tabs.warnOnClose", false);\n'
                             'user_pref("gfx.webrender.software", true);\n'
+                            'user_pref("dom.w3c_touch_events.enabled", 1);\n'
                             'user_pref("browser.shell.checkDefaultBrowser", false);\n')
         finally:
             os.close(profile)
@@ -114,12 +115,13 @@ def prepare_browser():
         os.close(home)
 
 
-def start(args, user=False, env=None, audio=False):
+def start(args, user=False, env=None, audio=False, pass_fds=()):
     kwargs = {}
     if user:
         kwargs = dict(user=1000, group=1000, extra_groups=[3003], preexec_fn=limits)
     proc = subprocess.Popen(args, env=env, stdin=subprocess.DEVNULL,
-                            stdout=sys.stdout.buffer if audio else sys.stderr, **kwargs)
+                            stdout=sys.stdout.buffer if audio else sys.stderr,
+                            pass_fds=pass_fds, **kwargs)
     children.append(proc)
     return proc
 
@@ -220,7 +222,7 @@ def main():
     env = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': str(HOME), 'USER': 'browser',
            'LOGNAME': 'browser', 'DISPLAY': ':5', 'XAUTHORITY': str(auth),
            'XDG_RUNTIME_DIR': str(runtime), 'LANG': 'C.UTF-8', 'GDK_BACKEND': 'x11',
-           'MOZ_ENABLE_WAYLAND': '0', 'LIBGL_ALWAYS_SOFTWARE': '1',
+           'MOZ_ENABLE_WAYLAND': '0', 'MOZ_USE_XINPUT2': '1', 'LIBGL_ALWAYS_SOFTWARE': '1',
            'PULSE_SERVER': 'unix:/run/user/1000/pulse/native'}
     result = subprocess.run(['/usr/bin/xauth', '-q', '-f', str(auth)], env=env,
                             input='add :5 . ' + secrets.token_hex(16) + '\n', text=True,
@@ -260,7 +262,14 @@ def main():
             return False
 
     wait_ready(wm_ready, watched, 'window manager', 6)
-    keyboard = start(['/usr/bin/python3', str(APP / 'keyboard.py')], user=True, env=env)
+    keyboard_env = dict(env)
+    keyboard_fds = ()
+    if os.environ.get('TECHO5_VIDEO_FD') == '3':
+        os.fstat(3)  # Fail closed if the native supervisor did not supply its pipe.
+        keyboard_env['TECHO5_VIDEO_FD'] = '3'
+        keyboard_fds = (3,)
+    keyboard = start(['/usr/bin/python3', str(APP / 'keyboard.py')], user=True,
+                     env=keyboard_env, pass_fds=keyboard_fds)
     watched.append(keyboard)
 
     def keyboard_ready():

@@ -16,12 +16,16 @@ const (
 	// FromDLNA is a DLNA controller, which anybody on the network can be: the first video from an
 	// address asks on the screen first.
 	FromDLNA
+
+	// FromLocalApp is a locally launched app handing playback to the native player.
+	FromLocalApp
 )
 
 // Request is a video to play.
 type Request struct {
-	URL   string
-	Title string
+	URL      string
+	AudioURL string // optional separate sound input; otherwise URL supplies both streams
+	Title    string
 
 	Origin Origin
 	// From is the address that asked, for a DLNA controller: what the screen names and remembers.
@@ -48,6 +52,9 @@ type State struct {
 	Host   string
 	Origin Origin
 	From   string
+
+	// LastID is the last session actually begun, retained while idle; pending DLNA asks do not change it.
+	LastID uint64
 
 	// Pos is how far into the video it is, Dur how long it runs (0 when it does not say).
 	Pos, Dur time.Duration
