@@ -17,7 +17,7 @@ These are natural-language examples for a tool-capable Xiaozhi model, not locall
 
 ## Voice/display lifecycle
 
-A tool accepts the action immediately as `queued`; it must not wait for voice Idle while the cloud is waiting for the tool result. The display starts the browser after speech really drains, not merely when a TTSStop event paints Idle. An accepted screen handoff temporarily skips its automatic follow-up listen; ordinary conversation settings remain unchanged. New accepted commands supersede older ones. Close, explicit voice cancellation, mute and higher-priority safety screens retire pending work.
+A tool accepts the action immediately as `queued`; it must not wait for voice Idle while the cloud is waiting for the tool result. The display starts the browser after speech really drains, not merely when a TTSStop event paints Idle. An accepted screen handoff temporarily skips its automatic follow-up listen; ordinary conversation settings remain unchanged. New accepted commands supersede older ones. Close, explicit voice cancellation, mute and higher-priority safety screens retire pending work. A cloud reconnect does not: the server closes idle sessions about once a minute, and that transport drop must not cancel an app that is still starting. `app_status` remains a successful read (`ok: true`) whenever the last request did not fail, including right after boot.
 
 The existing single framebuffer owner still arbitrates browser, native video, phone, PIN/setup/update and the clock. Native YouTube full-screen playback retains its separate fd3 handoff. Browser readiness is an independent fd4 acknowledgement after actual window/work-area checks; PCM startup alone cannot report `open`. `closed` must wait for owned native decoder cleanup as well as the browser process group.
 
@@ -42,6 +42,12 @@ Deploy only a verified crown ARMv7/CGO-disabled image through the existing inact
 ## Verification and limitations
 
 Verify the sidecar catalog includes all five tools (including `web_search`). Make an actual SDK `tools/call` and observe queued→starting→open, then close→closed and the clock. Exercise Vietnamese/English query encoding, unavailable runtime, superseding commands, mute/cancel during startup, and native video handoff/return. Test while speaking and with automatic follow-ups enabled.
+
+Recorded on a physical crown with `v1.3.5_app-tools.2` (sidecar 1.2.0) after a slot install and reboot:
+- `app_status` returned `ok`/`closed` right after boot.
+- YouTube, web (Vietnamese queries) and Netflix opened through SDK `tools/call` and reached `open`.
+- `close_app` reached `closed`, with no browser processes left.
+- Three requests sent about 7 s before the cloud's idle-session drop still reached `open`.
 
 Catalog discovery and a direct SDK call do **not** prove a spoken model invocation. That requires a real spoken request, corresponding app-tool counters, and the visible result. Do not describe it as voice-verified until that observation exists. Netflix login and content entitlement are separate from app opening; some titles/direct URLs can still return E100.
 

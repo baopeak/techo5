@@ -18,29 +18,67 @@ Their features and credits are retained below; the upstream release badge is not
   All twelve original styles remain. Clock taps and horizontal style swipes are independent,
   so disabling tap-to-assist does not disable clock navigation.
   See [screen settings](docs/setup.md#6-the-screen).
-- **Optional local browser and YouTube on `crown`:** Firefox, a Vietnamese/English touch keyboard,
-  yt-dlp and TECHO5's native full-screen video player run on the Echo itself. No laptop renderer
-  or casting is needed. The touch keyboard includes explicit page-scroll controls.
-  A separate signed-Alpine runtime is required; **Phát video** hands playback from the browser
-  to the native player instead of Firefox's embedded decoder or the slower mpv/Xorg path.
-  Native screen ownership and full-page repaint prevent
-  stale black clock edges when returning from Xorg. See [setup, limits and rollback](docs/local-apps.md).
-- **Optional Exa MCP sidecar:** web search runs on the device, separately from `echod`, through
-  Exa's official keyless MCP endpoint. No laptop, Exa API key or paid fallback is required;
-  anonymous use is rate limited and the exact quota is unknown.
-  See the [build, setup and rollback guide](docs/xiaozhi-mcp.md).
+- **Local Chromium browser and YouTube on `crown`:** Vietnamese/English touch keyboard,
+  explicit page scrolling, in-page video, and optional **Phát video** handoff to the native
+  full-screen player with timeline and ±10-second seeking. Everything renders on the Echo;
+  no laptop renderer or casting. The separate ARM64 browser runtime works above the existing
+  ARMv7 Alpine firmware; it does not replace the kernel or install Android applications.
+  See [runtime preparation, limits and rollback](docs/local-apps.md).
+- **Experimental Netflix:** Chromium/Widevine played one authenticated 720p session on the
+  physical Echo. Some titles/direct watch URLs still return E100; universal Netflix support,
+  hardware acceleration and HD quality are not guaranteed. Sign in only on your own device.
+- **Xiaozhi MCP app tools:** `open_app`, `search_on_screen`, `close_app`, `app_status` join the
+  existing `web_search` sidecar. App requests queue while the assistant speaks and use a narrow
+  local Unix bridge, not a cloud-controlled root shell. Screen search and AI answer retrieval
+  are different operations. See [voice commands, security and verification](docs/app-control.md).
+- **Optional Exa search:** the on-device sidecar uses Exa's official keyless MCP service.
+  No laptop, Exa API key or paid fallback is required; anonymous use is rate limited.
+  See [MCP setup and rollback](docs/xiaozhi-mcp.md).
 
 **[Fork prereleases](https://github.com/baopeak/techo5/releases)** are custom, unsigned builds,
 not upstream signed OTA releases. The `v1.3.5-xiaozhi-mcp.1` prerelease targets only an
 **Echo Show 8 1st gen (2019, `crown`) already running TECHO5 Alpine Linux**.
 It supplies binaries and a launcher, not a ready-made rootfs or boot image; use the guide to
 package a custom rootfs. Do not use these artifacts on Android or `athena`.
-A previous custom rootfs with sidecar `1.1.0` survived a real reboot with a good rollback slot.
-Vietnamese and English sample searches passed then, but the shared free Exa quota has since
-been observed exhausted. The corrected sidecar `1.1.1` is not device-reboot validated.
-Cloud MCP initialization/catalog discovery was observed, but **a voice-triggered model tool
-call has not yet been observed**.
+The app-tool sidecar source is **1.2.0**. Earlier prerelease assets are not automatically updated
+by these source changes; do not mix old daemon/browser scripts with the new readiness protocol.
+Cloud catalog discovery and direct SDK calls are separate from a spoken model invocation:
+**real voice-triggered app control must be verified with the selected cloud model**.
+Native YouTube runs best at modest resolutions; start with 480p. The old kernel/chroot is not a
+modern hardened browser sandbox. Account sessions, external website availability and the
+previously observed speaker-underrun/loudness issue remain separate risks.
 Other Echo variants listed below describe upstream support, not testing of this fork.
+
+Captured from the physical Echo Show 8 framebuffer after real MCP `tools/call` requests
+(`search_on_screen`, `open_app`, `close_app`) on an installed, rebooted slot. Netflix profile
+names, PINs and account details are not shown.
+
+<table>
+<tr>
+<td width="50%"><a href="docs/screenshots/show8/apps-youtube-search.png"><img src="docs/screenshots/show8/apps-youtube-search.png" alt="YouTube search results for a Vietnamese query in Chromium on the Echo, with the Vietnamese touch keyboard docked below"></a></td>
+<td width="50%"><a href="docs/screenshots/show8/apps-web-search.png"><img src="docs/screenshots/show8/apps-web-search.png" alt="Google search results for a Vietnamese weather query in Chromium on the Echo"></a></td>
+</tr>
+<tr>
+<td><code>search_on_screen</code> YouTube, Vietnamese query</td>
+<td><code>search_on_screen</code> web (Google)</td>
+</tr>
+<tr>
+<td><a href="docs/screenshots/show8/apps-netflix-home.png"><img src="docs/screenshots/show8/apps-netflix-home.png" alt="Netflix home page in Chromium on the Echo after choosing a profile"></a></td>
+<td><a href="docs/screenshots/show8/apps-netflix-search.png"><img src="docs/screenshots/show8/apps-netflix-search.png" alt="Netflix search results in Chromium on the Echo"></a></td>
+</tr>
+<tr>
+<td><code>open_app</code> Netflix (experimental)</td>
+<td><code>search_on_screen</code> Netflix</td>
+</tr>
+<tr>
+<td><a href="docs/screenshots/show8/apps-native-player.png"><img src="docs/screenshots/show8/apps-native-player.png" alt="Native full-screen video player with timeline, plus and minus ten second seek and volume buttons"></a></td>
+<td><a href="docs/screenshots/show8/apps-closed-to-clock.png"><img src="docs/screenshots/show8/apps-closed-to-clock.png" alt="The calendar clock face shown again after the browser was closed"></a></td>
+</tr>
+<tr>
+<td><strong>Phát video</strong>: native player, timeline and ±10 s</td>
+<td><code>close_app</code> returns to the clock</td>
+</tr>
+</table>
 
 ---
 
