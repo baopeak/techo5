@@ -22,7 +22,7 @@ func SetAppHandoffPending(pending bool) {
 // TTSStop/idle publication. A screen action must not steal that output interval.
 func AnswerPlaying() bool {
 	f := Get()
-	if followUpOpening.Load() != 0 || f.Listening() {
+	if followUpOpening.Load() != 0 || f.askingTurn() {
 		return true
 	}
 	down := f.downlink()

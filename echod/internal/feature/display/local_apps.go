@@ -128,6 +128,7 @@ type localApps struct {
 	generation       uint64
 	readyPipe        *os.File
 	browserReady     chan browserReadyResult
+	dictation        *os.File
 }
 
 func trustedLauncher(path string) error {
@@ -308,7 +309,7 @@ func (a *localApps) step(priority bool, now time.Time, wake func()) (bool, bool)
 		if a.launchURL != "" {
 			cmd.Env = append(cmd.Env, "TECHO5_APP_URL="+a.launchURL)
 		}
-		cmd.Env = append(cmd.Env, "TECHO5_APP_READY_FD=4")
+		cmd.Env = append(cmd.Env, "TECHO5_APP_READY_FD=4", "TECHO5_DICTATION_FD=5")
 		audio, output, err := os.Pipe()
 		if err != nil {
 			slog.Warn("browser audio pipe failed", "err", err)
@@ -332,11 +333,24 @@ func (a *localApps) step(priority bool, now time.Time, wake func()) (bool, bool)
 			a.controlError("browser readiness pipe unavailable")
 			return false, false
 		}
-		cmd.ExtraFiles = []*os.File{videoOutput, readyOutput}
+		dictation, dictationPeer, err := newDictationPair()
+		if err != nil {
+			audio.Close()
+			output.Close()
+			videoInput.Close()
+			videoOutput.Close()
+			readyInput.Close()
+			readyOutput.Close()
+			a.controlError("browser dictation socket unavailable")
+			return false, false
+		}
+		cmd.ExtraFiles = []*os.File{videoOutput, readyOutput, dictationPeer}
 		cmd.Stdout = output
 		if err := a.startCommand(cmd, wake); err != nil {
 			readyInput.Close()
 			readyOutput.Close()
+			dictation.Close()
+			dictationPeer.Close()
 			a.controlError("browser launcher could not start; check the installed runtime")
 			_ = audio.Close()
 			_ = output.Close()
@@ -348,6 +362,9 @@ func (a *localApps) step(priority bool, now time.Time, wake func()) (bool, bool)
 		_ = output.Close()
 		_ = videoOutput.Close()
 		_ = readyOutput.Close()
+		_ = dictationPeer.Close()
+		a.dictation = dictation
+		go serveDictation(dictation, xiaozhi.Get().Dictate)
 		a.generation++
 		a.readReady(readyInput, wake)
 		a.activeURL, a.launchURL = a.launchURL, ""
@@ -417,6 +434,10 @@ func (a *localApps) step(priority bool, now time.Time, wake func()) (bool, bool)
 			_ = a.videoPipe.Close()
 			a.videoPipe = nil
 		}
+		if a.dictation != nil {
+			_ = a.dictation.Close()
+			a.dictation = nil
+		}
 		a.videoReady = nil
 		a.clearReady()
 		if a.intent == nil && a.pending == nil && a.nativeID == 0 && a.control.State != "error" {
@@ -472,6 +493,10 @@ func (a *localApps) step(priority bool, now time.Time, wake func()) (bool, bool)
 			}
 			if a.videoPipe != nil {
 				_ = a.videoPipe.Close()
+			}
+			if a.dictation != nil {
+				// Ends a dictation in progress along with the session.
+				_ = a.dictation.Close()
 			}
 			a.videoReady = nil
 			if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {

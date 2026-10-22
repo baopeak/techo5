@@ -148,6 +148,12 @@ type Feature struct {
 	turn     *turn
 	response responseWait
 
+	// quiet is set by a dictation turn and cleared by the next turn that is not one: the words
+	// were typed, so whatever the cloud says or calls in reply to them is not wanted. dictation is
+	// where the transcript goes, nil once it has been delivered.
+	quiet     bool
+	dictation chan string
+
 	// down is the speaking direction of the current session, and the only way anything in this file
 	// can make a sound. It is here rather than being made where it is used so that Stop has
 	// something to reach: silencing the device has to work when there is no turn to cancel, because
@@ -627,6 +633,9 @@ func (f *Feature) onEvent(e Event, down *downlink) {
 		f.response.observe(e, time.Now())
 	}
 	f.mu.Unlock()
+	if f.quietEvent(e) {
+		return
+	}
 	switch e.Type {
 	case TypeSTT:
 		slog.Info("xiaozhi: transcript", "text", e.Text)

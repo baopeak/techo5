@@ -122,6 +122,11 @@ func (a *localApps) controlRequest(req appControlRequest) appControlResponse {
 	if req.Action == "status" {
 		return a.controlStatus()
 	}
+	if xiaozhi.Dictating() {
+		// The cloud's last input was typed into the keyboard, so a tool call now answers words
+		// nobody asked as a command. The next real request clears this.
+		return appControlResponse{State: "error", Error: "the last words were dictated into the keyboard, not asked"}
+	}
 	a.nextRequest++
 	if req.Action == "close" {
 		a.intent = nil
