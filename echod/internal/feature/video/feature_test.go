@@ -45,9 +45,16 @@ func fakeFFmpeg() {
 	}
 	size, _ := strconv.Atoi(os.Getenv("TECHO5_FAKE_FRAME"))
 	frames, _ := strconv.Atoi(os.Getenv("TECHO5_FAKE_FRAMES"))
+	seekTail := slices.Contains(args, "-ss") && os.Getenv("TECHO5_FAKE_SEEK_TAIL") != ""
+	if seekTail {
+		frames = 1
+		if os.Getenv("TECHO5_FAKE_SEEK_NO_VIDEO") != "" {
+			frames = 0
+		}
+	}
 	video := os.NewFile(3, "video")
 	if slices.Contains(args, "pipe:1") {
-		if os.Getenv("TECHO5_FAKE_ZERO_AUDIO_PACKETS") == "" {
+		if os.Getenv("TECHO5_FAKE_ZERO_AUDIO_PACKETS") == "" && !seekTail {
 			_, _ = os.Stdout.Write(make([]byte, 48000*4))
 		}
 		// End sound independently of the picture, including a stream with no decoded PCM.
@@ -59,7 +66,18 @@ func fakeFFmpeg() {
 			os.Exit(1)
 		}
 	}
-	if os.Getenv("TECHO5_FAKE_HOLD") != "" {
+	if os.Getenv("TECHO5_FAKE_PARTIAL_VIDEO") != "" {
+		_, _ = video.Write(frame[:len(frame)-1])
+	}
+	if os.Getenv("TECHO5_FAKE_DECODE_FAIL") != "" {
+		os.Stderr.WriteString("network failed after the final packet\n")
+		os.Exit(1)
+	}
+	if seekTail && os.Getenv("TECHO5_FAKE_SEEK_FAIL") != "" {
+		os.Stderr.WriteString("network failed after the final packet\n")
+		os.Exit(1)
+	}
+	if os.Getenv("TECHO5_FAKE_HOLD") != "" && !seekTail {
 		select {}
 	}
 	os.Exit(0)

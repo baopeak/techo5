@@ -70,10 +70,55 @@ func (r ReceivedTrack) Stop() {
 	}
 }
 
+// SetPaused changes only this received track, never music that displaced its decoder.
+func (r ReceivedTrack) SetPaused(on bool) {
+	if r.stream == nil || r.track == nil {
+		return
+	}
+	if on {
+		r.stream.pauseIf(false, func(t *track) bool { return t == r.track })
+	} else {
+		r.stream.unpauseIf(func(t *track, _ bool) bool { return t == r.track })
+	}
+}
+
+// ReceivedLease reserves a delayed PCM handover. Any newer play or stop invalidates it.
+// Keep the lease while reloading a decoder; do not capture a new one after the delay.
+type ReceivedLease struct {
+	stream     *Stream
+	generation uint64
+}
+
+// Play replaces the reserved stream only if no newer audio request has won.
+func (r ReceivedLease) Play(name string, src PCMSource, rate, channels int) (ReceivedTrack, bool) {
+	if r.stream == nil || r.generation == 0 {
+		_ = src.Close()
+		return ReceivedTrack{}, false
+	}
+	track := r.stream.playPCMAt(name, src, rate, channels, r.generation)
+	return track, track.track != nil
+}
+
+// ReleaseForReplacement stops this received track and reserves its next decoder atomically.
+// It cannot reserve over a newer track, even if that track has already finished.
+func (r ReceivedTrack) ReleaseForReplacement() ReceivedLease {
+	if r.stream == nil || r.track == nil {
+		return ReceivedLease{}
+	}
+	_, generation := r.stream.stopIfGeneration(func(t *track, _ bool) bool {
+		return r.stream.asks == r.track.ask && (t == r.track || t == nil)
+	})
+	return ReceivedLease{stream: r.stream, generation: generation}
+}
+
 // PlayPCM plays audio a remote is sending, replacing whatever was playing: the last thing started
 // wins, as on any speaker. Everything else about it is a track, so a turn ducks or pauses it, a reply
 // waits it out, and Home Assistant sees the speaker playing.
 func (m *Stream) PlayPCM(name string, src PCMSource, rate, channels int) ReceivedTrack {
+	return m.playPCMAt(name, src, rate, channels, 0)
+}
+
+func (m *Stream) playPCMAt(name string, src PCMSource, rate, channels int, generation uint64) ReceivedTrack {
 	if m == nil {
 		_ = src.Close()
 		return ReceivedTrack{}
@@ -84,7 +129,11 @@ func (m *Stream) PlayPCM(name string, src PCMSource, rate, channels int) Receive
 		return ReceivedTrack{}
 	}
 
-	t, ctx := m.start(&track{item: name, received: true})
+	t, ctx := m.startAt(&track{item: name, received: true}, generation)
+	if t == nil {
+		_ = src.Close()
+		return ReceivedTrack{}
+	}
 	slog.Info("playing received audio", "from", name, "rate", rate, "channels", channels)
 
 	safe.Go("received audio", func() {

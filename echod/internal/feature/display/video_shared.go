@@ -37,6 +37,9 @@ const (
 	videoTapStop
 	videoTapQuieter
 	videoTapLouder
+	videoTapBackward
+	videoTapForward
+	videoTapTimeline
 )
 
 // videoAsk is the question about a DLNA video, as drawn.

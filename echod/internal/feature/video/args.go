@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Screen is what the picture is made for: the canvas the daemon draws on (960×480 on the Show 5,
@@ -105,6 +106,8 @@ type Decoding struct {
 	AudioURL string
 	Info     Info
 	Screen   Screen
+	// Offset is an accurate input seek, applied equally to both inputs. Output clocks start at zero.
+	Offset time.Duration
 
 	// CAFile is where the certificate authorities are, empty for OpenSSL's own default; Insecure
 	// stops certificates being checked (the device's own Insecure TLS setting).
@@ -208,11 +211,17 @@ func DecodeArgs(d Decoding) []string {
 	// Past 720p every core, and best effort even so: the decoder's own shortcuts (skipping the
 	// deblocking) make ffmpeg 8 refuse to open the picture's output when given on its command line.
 	a = append(a, "-threads", strconv.Itoa(t))
+	if d.Offset > 0 {
+		a = append(a, "-ss", strconv.FormatFloat(d.Offset.Seconds(), 'f', 6, 64))
+	}
 	a = append(a, "-i", d.URL)
 	audioInput := "0"
 	if d.AudioURL != "" {
 		a = append(a, "-max_pixels", maxPixels)
 		a = append(a, netArgs(d.AudioURL, d.CAFile, d.Insecure, d.Proxy)...)
+		if d.Offset > 0 {
+			a = append(a, "-ss", strconv.FormatFloat(d.Offset.Seconds(), 'f', 6, 64))
+		}
 		a = append(a, "-i", d.AudioURL)
 		audioInput = "1"
 	}

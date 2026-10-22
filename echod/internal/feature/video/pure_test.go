@@ -364,3 +364,51 @@ func TestTheDecoderArguments(t *testing.T) {
 		t.Errorf("probe: %q", p)
 	}
 }
+
+func TestSeekOffsetsBothInputsWithoutChangingOutputTimebase(t *testing.T) {
+	info, err := ParseProbe(probeMP4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, separate := range []string{"", "https://cdn.example.com/audio"} {
+		d := Decoding{URL: "https://cdn.example.com/video", AudioURL: separate, Info: info, Screen: Screen{W: 1280, H: 800}, Offset: 12345 * time.Millisecond}
+		args := DecodeArgs(d)
+		inputs, seeks := 0, 0
+		for i, arg := range args {
+			if arg == "-ss" {
+				seeks++
+				if args[i+1] != "12.345000" {
+					t.Fatalf("seek precision lost: %q", args)
+				}
+			}
+			if arg == "-i" {
+				inputs++
+				if i < 2 || args[i-2] != "-ss" || args[i-1] != "12.345000" {
+					t.Fatalf("input not sought equally: %q", args)
+				}
+			}
+		}
+		if seeks != inputs || inputs != 1+boolInt(separate != "") {
+			t.Fatalf("offset count: %d seeks, %d inputs", seeks, inputs)
+		}
+		if !slices.Contains(args, Filter(info, d.Screen)) || !slices.Contains(args, soundFilter) {
+			t.Fatal("seek changed zero-based frame/audio filters")
+		}
+		for _, option := range []string{"-copyts", "-noaccurate_seek", "-seek_timestamp"} {
+			if slices.Contains(args, option) {
+				t.Fatalf("seek retained input timestamps or disabled accurate decoding: %q", args)
+			}
+		}
+		d.Offset = 0
+		if slices.Contains(DecodeArgs(d), "-ss") {
+			t.Fatal("normal/live decode gained a seek")
+		}
+	}
+}
+
+func boolInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}

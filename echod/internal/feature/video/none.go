@@ -2,12 +2,16 @@
 
 package video
 
+import "time"
+
 // Here is whether this device plays videos: the Dot does not (doc.go).
 const Here = false
 
 func Play(Request) (uint64, error) { return 0, ErrNotHere }
 func Stop()                        {}
 func StopID(uint64)                {}
+func Seek(time.Duration) error     { return ErrNotHere }
+func SeekBy(time.Duration) error   { return ErrNotHere }
 func Pause()                       {}
 func Resume()                      {}
 func Current() State               { return State{Phase: Idle} }
