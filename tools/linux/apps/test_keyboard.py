@@ -25,6 +25,14 @@ class DictationTests(unittest.TestCase):
         self.assertEqual(add_dictation("", "chờ chút..."), "chờ chút...")
         self.assertEqual(add_dictation("abc", " . "), "abc")
 
+    def test_recognizer_noise_phrases_count_as_nothing(self):
+        for noise in ("Cảm ơn các bạn đã theo dõi và hẹn gặp lại",
+                      "Hãy subscribe cho kênh La La School Để không bỏ lỡ những video hấp dẫn",
+                      "Thanks for watching!"):
+            with self.subTest(noise=noise):
+                self.assertEqual(add_dictation("tìm", noise), "tìm")
+        self.assertEqual(add_dictation("", "cảm ơn"), "cảm ơn")
+
     def test_result_is_nfc(self):
         self.assertTrue(unicodedata.is_normalized("NFC", add_dictation("", "Việt")))
 

@@ -92,9 +92,19 @@ DICTATION_ERRORS = {
 }
 
 
+# Phrases the cloud recognizer produces from silence or noise (video-outro captions it learned),
+# not from anybody dictating. A transcript containing one counts as nothing heard.
+STOCK_PHRASES = ("cảm ơn các bạn đã theo dõi", "hãy subscribe cho kênh", "đăng ký kênh",
+                 "hẹn gặp lại các bạn trong những video tiếp theo",
+                 "thanks for watching", "thank you for watching", "please subscribe")
+
+
 def add_dictation(buffer, text):
     """Append dictated words to the composition as a query: one space, no closing period."""
     text = " ".join(str(text).split())
+    folded = unicodedata.normalize("NFC", text).casefold()
+    if any(phrase in folded for phrase in STOCK_PHRASES):
+        return buffer
     if text.endswith(".") and not text.endswith(".."):
         text = text[:-1].rstrip()
     if not text:
@@ -385,13 +395,16 @@ def main():
                     return False
                 self.dictation_state = "idle"
                 self.update_mic()
-                if text:
-                    self.buffer = add_dictation(self.buffer, text)
+                composed = add_dictation(self.buffer, text) if text else self.buffer
+                if composed != self.buffer:
+                    self.buffer = composed
                     self.update_preview()
                     if not self.expanded:
                         self.toggle_keyboard()
                     self.hint.set_text("Đã nhập bằng giọng nói. Sửa nếu cần, rồi Dán hoặc Tìm / Enter.")
                 else:
+                    if text:
+                        error = "nothing"
                     self.hint.set_text(DICTATION_ERRORS.get(error, DICTATION_ERRORS["unavailable"]))
             return True
 

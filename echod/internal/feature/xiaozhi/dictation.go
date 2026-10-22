@@ -71,7 +71,9 @@ func (f *Feature) Dictate(ctx context.Context, finish <-chan struct{}) (string, 
 	}
 
 	heard := make(chan string, 1)
-	t, err := f.openTurn(wakeMode(), 0, 0, false, heard)
+	// The server ends the utterance: somebody who has just pressed a button often pauses before
+	// speaking, and the device's own endpoint took that pause for the end of the sentence.
+	t, err := f.openTurn(ListenAuto, 0, 0, false, heard)
 	if err != nil {
 		return "", err
 	}
