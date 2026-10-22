@@ -24,9 +24,9 @@ and all controls refuse input focus, leaving real Firefox fields focused.
 
 For YouTube: search in the browser, open a public watch page, then tap Phát video.
 The local player.py resolves streams via yt-dlp/QuickJS and hands H.264 up to
-the height on the quality button (360p/480p/720p, 480p by default, remembered
+the height on the quality button (360p/480p/720p, 720p by default, remembered
 in ~/.config/techo5/video-quality) to TECHO5's native framebuffer player.
-Higher heights look sharper but cost more software-decode CPU on the Echo.
+Lower heights save software-decode CPU and network on the Echo.
 Hủy mở video cancels a handoff that has not started yet. Resolution
 requires network access to YouTube, without cookies/account or disk downloads.
 Stream failures remain visible and do not close Firefox. SIGTERM also stops
@@ -523,8 +523,8 @@ def main():
             self.quality = next_quality(self.quality)
             save_quality(self.quality)
             self.quality_button.set_label("%dp" % self.quality)
-            notes = {360: "nhẹ CPU và mạng", 480: "mặc định, mượt trên Echo",
-                     720: "nét hơn, có thể giật trên Echo"}
+            notes = {360: "nhẹ CPU và mạng nhất", 480: "nhẹ hơn, tiết kiệm mạng",
+                     720: "mặc định, nét nhất và vẫn mượt trên Echo"}
             self.video_status.set_text("Chất lượng Phát video: %dp (%s). Áp dụng lần phát tiếp theo."
                                        % (self.quality, notes[self.quality]))
 

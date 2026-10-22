@@ -3,8 +3,8 @@
 
 Invoked by keyboard.py as `player.py [--max-height 360|480|720] URL` with one
 HTTPS YouTube URL. No cookies, downloads, shell, external rendering or X11
-video decoder. QuickJS/yt-dlp select H.264 up to the chosen height (480p by
-default; the Echo decodes in software, so 720p may drop frames) and AAC/Opus. The inherited fd3 carries one bounded native-video request;
+video decoder. QuickJS/yt-dlp select H.264 up to the chosen height (720p by
+default, preferring <=30 fps) and AAC/Opus. The inherited fd3 carries one bounded native-video request;
 stdout carries only a fixed status token, never signed media URLs.
 Exit 0 means handoff sent, 2 invalid URL, 3 extraction failure, 4 unavailable
 handoff. Extraction has a 75-second deadline; cancellation reaps its child.
@@ -21,9 +21,10 @@ from urllib.parse import parse_qs, urlsplit
 
 
 VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}\Z")
-# Heights the user can pick for native playback; 480p measured smooth on crown.
+# Heights the user can pick for native playback. 720p (60 fps sources shown at
+# 30) measured smooth on crown; 1080p decodes too slowly for the panel's gain.
 QUALITIES = (360, 480, 720)
-DEFAULT_QUALITY = 480
+DEFAULT_QUALITY = 720
 
 
 def quality_from(value):

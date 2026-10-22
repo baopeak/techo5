@@ -40,12 +40,12 @@ class FormatTests(unittest.TestCase):
         return {"url": "https://media.example/" + name, "vcodec": "none",
                 "acodec": codec, "abr": bitrate}
 
-    def test_select_h264_at_most_480_and_aac(self):
+    def test_default_selects_h264_at_most_720_and_aac(self):
         formats = [self.video("360", 360), self.video("480", 480),
-                   self.video("720", 720), self.video("vp9", 480, "vp9"),
+                   self.video("720", 720), self.video("1080", 1080), self.video("vp9", 720, "vp9"),
                    self.audio("opus", "opus", 160), self.audio("aac")]
         self.assertEqual(select_formats({"formats": formats}),
-                         ("https://media.example/480", "https://media.example/aac"))
+                         ("https://media.example/720", "https://media.example/aac"))
 
     def test_quality_cap_selects_highest_allowed_height(self):
         formats = [self.video("360", 360), self.video("480", 480),
@@ -69,17 +69,17 @@ class FormatTests(unittest.TestCase):
 
     def test_quality_values_are_bounded(self):
         self.assertEqual(QUALITIES, (360, 480, 720))
-        for value, expected in (("720", 720), (360, 360), ("480\n", 480), ("1080", 480),
-                                ("", 480), (None, 480), ("abc", 480), ("-1", 480)):
+        for value, expected in (("720", 720), (360, 360), ("480\n", 480), ("1080", 720),
+                                ("", 720), (None, 720), ("abc", 720), ("-1", 720)):
             with self.subTest(value=value):
                 self.assertEqual(quality_from(value), expected)
 
     def test_arguments_carry_quality_to_extractor(self):
         url = "https://youtu.be/abcdefgh_-1"
-        self.assertEqual(parse_args([url]), (False, 480, url))
+        self.assertEqual(parse_args([url]), (False, 720, url))
         self.assertEqual(parse_args(["--max-height", "720", url]), (False, 720, url))
         self.assertEqual(parse_args(["--extract", "--max-height", "360", url]), (True, 360, url))
-        self.assertEqual(parse_args(["--max-height", "9999", url]), (False, 480, url))
+        self.assertEqual(parse_args(["--max-height", "9999", url]), (False, 720, url))
         for argv in ([], ["--max-height", url], [url, url], ["--max-height"]):
             with self.subTest(argv=argv):
                 self.assertIsNone(parse_args(argv))
@@ -96,7 +96,7 @@ class FormatTests(unittest.TestCase):
                          ("https://media.example/v", "https://media.example/a"))
 
     def test_missing_compatible_streams_fails(self):
-        for formats in ([], [self.video("v", 480)], [self.video("v", 720), self.audio("a")],
+        for formats in ([], [self.video("v", 480)], [self.video("v", 1080), self.audio("a")],
                         [self.video("v", 480, "vp9"), self.audio("a")],
                         [{**self.video("v", 480), "url": "file:///tmp/v"}, self.audio("a")]):
             with self.subTest(formats=formats), self.assertRaises(ValueError):

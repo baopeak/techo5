@@ -67,27 +67,27 @@ class GraphemeTests(unittest.TestCase):
 class QualityPreferenceTests(unittest.TestCase):
     def test_default_and_round_trip(self):
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
-            self.assertEqual(load_quality(), 480)
-            save_quality(720)
             self.assertEqual(load_quality(), 720)
+            save_quality(480)
+            self.assertEqual(load_quality(), 480)
             save_quality(360)
             self.assertEqual(load_quality(), 360)
 
     def test_corrupt_or_unsupported_value_uses_default(self):
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
-            save_quality(720)
+            save_quality(360)
             path = os.path.join(home, ".config", "techo5", "video-quality")
             for text in ("1080", "garbage", ""):
                 with self.subTest(text=text):
                     with open(path, "w") as handle:
                         handle.write(text)
-                    self.assertEqual(load_quality(), 480)
+                    self.assertEqual(load_quality(), 720)
 
     def test_unwritable_home_is_not_fatal(self):
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
             open(os.path.join(home, ".config"), "w").close()  # a file blocks the directory
-            save_quality(720)
-            self.assertEqual(load_quality(), 480)
+            save_quality(360)
+            self.assertEqual(load_quality(), 720)
 
 
 if __name__ == "__main__":
