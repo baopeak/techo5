@@ -104,11 +104,16 @@ func appIntentFor(req appControlRequest) appIntent {
 	return in
 }
 
+// A status read succeeds unless the last request failed. Retirement paths
+// (safety screens, cancellation) can set a state on the zero-value response
+// before any request, so OK is derived here rather than trusted from it.
 func (a *localApps) controlStatus() appControlResponse {
-	if a.control.State == "" {
-		return appControlResponse{OK: true, State: "closed"}
+	status := a.control
+	if status.State == "" {
+		status.State = "closed"
 	}
-	return a.control
+	status.OK = status.State != "error"
+	return status
 }
 
 func (a *localApps) controlRequest(req appControlRequest) appControlResponse {

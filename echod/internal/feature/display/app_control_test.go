@@ -337,6 +337,16 @@ func TestAppControlMuteWhileStartingBeatsReady(t *testing.T) {
 	}
 }
 
+func TestAppControlStatusAfterSafetyBeforeAnyRequest(t *testing.T) {
+	// Boot can show a priority screen before any tool call; status must stay a
+	// successful read, or the MCP sidecar reports it as a rejected request.
+	a := &localApps{}
+	a.step(true, time.Now(), func() {})
+	if status := a.controlRequest(appControlRequest{Action: "status"}); !status.OK || status.State != "closed" {
+		t.Fatalf("status after safety screen = %+v, want ok closed", status)
+	}
+}
+
 func TestLocalAppsSafetyDropsBusyRetainedButtonAndNativeReturn(t *testing.T) {
 	for _, source := range []string{"button", "native return"} {
 		t.Run(source, func(t *testing.T) {
