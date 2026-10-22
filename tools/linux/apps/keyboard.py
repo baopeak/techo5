@@ -16,6 +16,14 @@ available to Firefox until another application replaces them or this process
 exits. Composition is not logged or persisted. Pasting sends it to the focused
 Firefox field; submitting a web search naturally sends that search to the site.
 
+Typed text is shown as typed. Ẩn chữ masks it for one entry, such as a PIN or
+password, and the next Dán or Tìm shows text again.
+
+Nói dictates instead of typing, in Vietnamese or English without choosing: the
+native daemon opens the Echo's microphone through Xiaozhi on the inherited fd5
+socket, and the transcript is added to the composition, never sent by itself.
+Xong ends listening early. The app root has no microphone of its own.
+
 Bàn phím hides/shows the large keys. The compact toolbar always reserves space
 at the bottom through EWMH struts. Đóng and Escape request Firefox Ctrl+Q; the
 owning launcher must wait for Firefox and clean up this process/Xorg afterward.
@@ -38,8 +46,10 @@ not every script-specific UAX #29 rule. Hardware/runtime verification belongs
 to the deployment owner; this source does not imply a tested device session.
 """
 
+import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import unicodedata
@@ -73,6 +83,25 @@ def save_quality(height):
         os.replace(temporary, path)
     except OSError:
         pass
+
+
+DICTATION_ERRORS = {
+    "busy": "Xiaozhi \u0111ang b\u1eadn. Ch\u1edd Xiaozhi xong r\u1ed3i b\u1ea5m N\u00f3i l\u1ea1i.",
+    "nothing": "Kh\u00f4ng nghe r\u00f5. B\u1ea5m N\u00f3i r\u1ed3i n\u00f3i g\u1ea7n m\u00e1y h\u01a1n.",
+    "unavailable": "Xiaozhi ch\u01b0a s\u1eb5n s\u00e0ng n\u00ean ch\u01b0a nh\u1eadp b\u1eb1ng gi\u1ecdng n\u00f3i \u0111\u01b0\u1ee3c.",
+}
+
+
+def add_dictation(buffer, text):
+    """Append dictated words to the composition as a query: one space, no closing period."""
+    text = " ".join(str(text).split())
+    if text.endswith(".") and not text.endswith(".."):
+        text = text[:-1].rstrip()
+    if not text:
+        return buffer
+    if buffer and not buffer.endswith(" "):
+        buffer += " "
+    return unicodedata.normalize("NFC", buffer + text)
 
 
 TONE_MARKS = frozenset("\u0300\u0301\u0303\u0309\u0323")
@@ -142,7 +171,16 @@ def main():
             self.set_skip_pager_hint(True)
             self.stick()
             self.buffer = ""
-            self.secret = True
+            self.secret = False
+            self.dictation = None
+            self.dictation_state = "idle"
+            self.dictation_input = b""
+            if os.environ.get("TECHO5_DICTATION_FD") == "5":
+                try:
+                    self.dictation = socket.socket(fileno=5)
+                    self.dictation.setblocking(False)
+                except OSError:
+                    self.dictation = None
             self.upper = False
             self.vietnamese = True
             self.symbols = False
@@ -191,7 +229,7 @@ def main():
             self.button("Cuộn lên", lambda: self.scroll_page(4), toolbar)
             self.button("Cuộn xuống", lambda: self.scroll_page(5), toolbar)
             self.button("Netflix", self.youtube, toolbar)
-            self.secret_button = self.button("Hiện chữ", self.toggle_secret, toolbar)
+            self.secret_button = self.button("Ẩn chữ", self.toggle_secret, toolbar)
             self.play_button = self.button("Phát video", self.play_video, toolbar)
             self.stop_button = self.button("Hủy mở video", self.stop_video, toolbar)
             self.stop_button.set_sensitive(False)
@@ -228,6 +266,10 @@ def main():
             self.set_default_size(self.width, 1)
             self.show_all()
             GLib.idle_add(self.reserve_space)
+            if self.dictation is not None:
+                GLib.io_add_watch(self.dictation.fileno(), GLib.PRIORITY_DEFAULT,
+                                  GLib.IOCondition.IN | GLib.IOCondition.HUP | GLib.IOCondition.ERR,
+                                  self.on_dictation)
 
         def button(self, text, callback, box):
             button = Gtk.Button(label=text)
@@ -264,6 +306,10 @@ def main():
             self.button("VI" if self.vietnamese else "EN", self.toggle_language, actions)
             self.button("abc" if self.symbols else "123 / ?", self.toggle_symbols, actions)
             self.button("Chữ hoa" if not self.upper else "Chữ thường", self.toggle_case, actions)
+            self.mic_button = None
+            if self.dictation is not None:
+                self.mic_button = self.button("Nói", self.dictate, actions)
+                self.update_mic()
             self.button("Cách", lambda: self.append(" "), actions)
             self.button("Xóa lùi", self.backspace, actions)
             self.button("Xóa", self.clear, actions)
@@ -292,6 +338,73 @@ def main():
             self.secret = not self.secret
             self.secret_button.set_label("Hiện chữ" if self.secret else "Ẩn chữ")
             self.update_preview()
+
+        def update_mic(self):
+            if self.mic_button is not None:
+                self.mic_button.set_label({"idle": "Nói", "listening": "Xong"}.get(
+                    self.dictation_state, "Đang nhận…"))
+                self.mic_button.set_sensitive(self.dictation_state != "transcribing")
+
+        def dictate(self):
+            if self.dictation is None or self.dictation_state == "transcribing":
+                return
+            listening = self.dictation_state == "listening"
+            try:
+                self.dictation.send(b"stop\n" if listening else b"listen\n")
+            except OSError:
+                self.end_dictation()
+                return
+            if listening:
+                self.dictation_state = "transcribing"
+                self.hint.set_text("Đang chuyển giọng nói thành chữ…")
+            else:
+                self.dictation_state = "listening"
+                self.hint.set_text("Đang nghe… nói tiếng Việt hoặc English, nói xong bấm Xong.")
+            self.update_mic()
+
+        def on_dictation(self, unused_fd, condition):
+            if self.closed or self.dictation is None:
+                return False
+            try:
+                data = self.dictation.recv(4096)
+            except BlockingIOError:
+                return True
+            except OSError:
+                data = b""
+            if not data or len(self.dictation_input) + len(data) > 65536:
+                self.end_dictation()
+                return False
+            self.dictation_input += data
+            while b"\n" in self.dictation_input:
+                line, self.dictation_input = self.dictation_input.split(b"\n", 1)
+                try:
+                    reply = json.loads(line)
+                    text, error = str(reply.get("text") or ""), str(reply.get("error") or "")
+                except (ValueError, AttributeError):
+                    self.end_dictation()
+                    return False
+                self.dictation_state = "idle"
+                self.update_mic()
+                if text:
+                    self.buffer = add_dictation(self.buffer, text)
+                    self.update_preview()
+                    if not self.expanded:
+                        self.toggle_keyboard()
+                    self.hint.set_text("Đã nhập bằng giọng nói. Sửa nếu cần, rồi Dán hoặc Tìm / Enter.")
+                else:
+                    self.hint.set_text(DICTATION_ERRORS.get(error, DICTATION_ERRORS["unavailable"]))
+            return True
+
+        def end_dictation(self):
+            # The daemon ended the channel, normally with the session; the button goes with it.
+            if self.dictation is not None:
+                self.dictation.close()
+                self.dictation = None
+            if self.mic_button is not None:
+                self.mic_button.hide()
+            if self.dictation_state != "idle":
+                self.dictation_state = "idle"
+                self.hint.set_text(DICTATION_ERRORS["unavailable"])
 
         def update_preview(self):
             text = ("•" * len(self.buffer)) if self.secret else self.buffer
@@ -436,6 +549,9 @@ def main():
             if steps:
                 self.browser_action(steps)
                 self.clear()
+                if self.secret:
+                    # Hiding was for this entry, such as a PIN; the next one is shown.
+                    self.toggle_secret()
 
         def youtube(self):
             self.browser_action([
@@ -597,6 +713,8 @@ def main():
             if self.child and self.child.poll() is None:
                 self.child.kill()
                 self.child.wait()
+            if self.dictation is not None:
+                self.dictation.close()
             Gtk.main_quit()
 
     if not os.environ.get("DISPLAY"):

@@ -332,6 +332,12 @@ def main():
         os.fstat(3)  # Fail closed if the native supervisor did not supply its pipe.
         keyboard_env['TECHO5_VIDEO_FD'] = '3'
         keyboard_fds = (3,)
+    if os.environ.get('TECHO5_DICTATION_FD') == '5':
+        # Xiaozhi dictation for the keyboard's Nói button; the browser never inherits it.
+        if not stat.S_ISSOCK(os.fstat(5).st_mode):
+            raise RuntimeError('invalid dictation channel')
+        keyboard_env['TECHO5_DICTATION_FD'] = '5'
+        keyboard_fds += (5,)
     keyboard = start(['/usr/bin/python3', str(APP / 'keyboard.py')], user=True,
                      env=keyboard_env, pass_fds=keyboard_fds)
     watched.append(keyboard)

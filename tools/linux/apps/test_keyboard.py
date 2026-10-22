@@ -9,7 +9,24 @@ import unittest
 import unicodedata
 from unittest import mock
 
-from keyboard import apply_tone, delete_grapheme, load_quality, save_quality
+from keyboard import add_dictation, apply_tone, delete_grapheme, load_quality, save_quality
+
+
+class DictationTests(unittest.TestCase):
+    def test_transcript_becomes_a_query(self):
+        self.assertEqual(add_dictation("", " Phở  Hà Nội. "), "Phở Hà Nội")
+        self.assertEqual(add_dictation("", "weather in Hanoi"), "weather in Hanoi")
+
+    def test_appends_after_typed_text_with_one_space(self):
+        self.assertEqual(add_dictation("tìm", "quán cà phê"), "tìm quán cà phê")
+        self.assertEqual(add_dictation("tìm ", "quán cà phê"), "tìm quán cà phê")
+
+    def test_keeps_an_ellipsis_and_ignores_empty_words(self):
+        self.assertEqual(add_dictation("", "chờ chút..."), "chờ chút...")
+        self.assertEqual(add_dictation("abc", " . "), "abc")
+
+    def test_result_is_nfc(self):
+        self.assertTrue(unicodedata.is_normalized("NFC", add_dictation("", "Việt")))
 
 
 class ToneTests(unittest.TestCase):

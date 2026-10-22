@@ -18,8 +18,8 @@ Their features and credits are retained below; the upstream release badge is not
   All twelve original styles remain. Clock taps and horizontal style swipes are independent,
   so disabling tap-to-assist does not disable clock navigation.
   See [screen settings](docs/setup.md#6-the-screen).
-- **Local Chromium browser and YouTube on `crown`:** Vietnamese/English touch keyboard,
-  explicit page scrolling, in-page video, and optional **Phát video** handoff to the native
+- **Local Chromium browser and YouTube on `crown`:** Vietnamese/English touch keyboard
+  with **Nói** voice dictation in either language through Xiaozhi, explicit page scrolling, in-page video, and optional **Phát video** handoff to the native
   full-screen player with timeline and ±10-second seeking. Everything renders on the Echo;
   no laptop renderer or casting. The separate ARM64 browser runtime works above the existing
   ARMv7 Alpine firmware; it does not replace the kernel or install Android applications.
