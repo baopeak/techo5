@@ -4,7 +4,8 @@ Run by deployment owner: python3 -m unittest discover -s tools/linux/apps.
 """
 import unittest
 
-from player import select_formats, validate_url
+from player import (QUALITIES, next_quality, parse_args, quality_from, select_formats,
+                    validate_url)
 
 
 class UrlTests(unittest.TestCase):
@@ -45,6 +46,46 @@ class FormatTests(unittest.TestCase):
                    self.audio("opus", "opus", 160), self.audio("aac")]
         self.assertEqual(select_formats({"formats": formats}),
                          ("https://media.example/480", "https://media.example/aac"))
+
+    def test_quality_cap_selects_highest_allowed_height(self):
+        formats = [self.video("360", 360), self.video("480", 480),
+                   self.video("720", 720), self.video("1080", 1080), self.audio("aac")]
+        for cap, expected in ((360, "360"), (480, "480"), (720, "720")):
+            with self.subTest(cap=cap):
+                self.assertEqual(select_formats({"formats": formats}, cap)[0],
+                                 "https://media.example/" + expected)
+
+    def test_prefers_30fps_or_less_at_the_same_height(self):
+        # The native player shows at most 30 frames a second; a 60 fps twin costs twice the decode.
+        formats = [{**self.video("720p60", 720), "fps": 60}, self.video("720p30", 720),
+                   {**self.video("480p60", 480), "fps": 60}, self.audio("aac")]
+        self.assertEqual(select_formats({"formats": formats}, 720)[0], "https://media.example/720p30")
+        only_60 = [{**self.video("720p60", 720), "fps": 60}, self.video("480p30", 480), self.audio("aac")]
+        self.assertEqual(select_formats({"formats": only_60}, 720)[0], "https://media.example/720p60")
+
+    def test_quality_cap_falls_back_to_lower_stream(self):
+        formats = [self.video("360", 360), self.audio("aac")]
+        self.assertEqual(select_formats({"formats": formats}, 720)[0], "https://media.example/360")
+
+    def test_quality_values_are_bounded(self):
+        self.assertEqual(QUALITIES, (360, 480, 720))
+        for value, expected in (("720", 720), (360, 360), ("480\n", 480), ("1080", 480),
+                                ("", 480), (None, 480), ("abc", 480), ("-1", 480)):
+            with self.subTest(value=value):
+                self.assertEqual(quality_from(value), expected)
+
+    def test_arguments_carry_quality_to_extractor(self):
+        url = "https://youtu.be/abcdefgh_-1"
+        self.assertEqual(parse_args([url]), (False, 480, url))
+        self.assertEqual(parse_args(["--max-height", "720", url]), (False, 720, url))
+        self.assertEqual(parse_args(["--extract", "--max-height", "360", url]), (True, 360, url))
+        self.assertEqual(parse_args(["--max-height", "9999", url]), (False, 480, url))
+        for argv in ([], ["--max-height", url], [url, url], ["--max-height"]):
+            with self.subTest(argv=argv):
+                self.assertIsNone(parse_args(argv))
+
+    def test_next_quality_cycles(self):
+        self.assertEqual([next_quality(q) for q in QUALITIES], [480, 720, 360])
 
     def test_muxed_audio_needs_no_extra_stream(self):
         self.assertEqual(select_formats({"formats": [self.video("muxed", 360, audio="mp4a.40.2")]}),

@@ -22,9 +22,12 @@ owning launcher must wait for Firefox and clean up this process/Xorg afterward.
 SIGTERM exits this overlay only (the launcher owns session shutdown). The dock
 and all controls refuse input focus, leaving real Firefox fields focused.
 
-For YouTube: search in Firefox, open a public watch page, then tap Phát video.
-The local player.py resolves streams via yt-dlp/QuickJS and plays H.264 <=480p
-with software X11 mpv and PulseAudio. Dừng video returns to Firefox. Resolution
+For YouTube: search in the browser, open a public watch page, then tap Phát video.
+The local player.py resolves streams via yt-dlp/QuickJS and hands H.264 up to
+the height on the quality button (360p/480p/720p, 480p by default, remembered
+in ~/.config/techo5/video-quality) to TECHO5's native framebuffer player.
+Higher heights look sharper but cost more software-decode CPU on the Echo.
+Hủy mở video cancels a handoff that has not started yet. Resolution
 requires network access to YouTube, without cookies/account or disk downloads.
 Stream failures remain visible and do not close Firefox. SIGTERM also stops
 and reaps the player; session process-group ownership remains with the launcher.
@@ -41,6 +44,36 @@ import subprocess
 import sys
 import unicodedata
 from collections import deque
+
+QUALITY_FILE = (".config", "techo5", "video-quality")
+
+
+def quality_path():
+    return os.path.join(os.environ.get("HOME") or os.path.expanduser("~"), *QUALITY_FILE)
+
+
+def load_quality():
+    """The remembered native-video height, or the player's default."""
+    from player import quality_from
+    try:
+        with open(quality_path(), encoding="ascii") as handle:
+            return quality_from(handle.read(16))
+    except (OSError, UnicodeDecodeError):
+        return quality_from(None)
+
+
+def save_quality(height):
+    """Remember the height; a read-only profile only loses the preference."""
+    path = quality_path()
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        temporary = path + ".tmp"
+        with open(temporary, "w", encoding="ascii") as handle:
+            handle.write("%d\n" % height)
+        os.replace(temporary, path)
+    except OSError:
+        pass
+
 
 TONE_MARKS = frozenset("\u0300\u0301\u0303\u0309\u0323")
 VOWELS = frozenset("aeiouyAEIOUY")
@@ -122,6 +155,7 @@ def main():
             self.player_handoff = False
             self.reading_video = False
             self.video_request = 0
+            self.quality = load_quality()
             self.closed = False
             self.screen = self.get_screen()
             self.width = self.screen.get_width()
@@ -161,10 +195,12 @@ def main():
             self.play_button = self.button("Phát video", self.play_video, toolbar)
             self.stop_button = self.button("Hủy mở video", self.stop_video, toolbar)
             self.stop_button.set_sensitive(False)
+            self.quality_button = self.button("%dp" % self.quality, self.cycle_quality, toolbar)
             native_youtube = (os.environ.get("TECHO5_APP_KIND", "youtube") == "youtube"
                               and os.environ.get("TECHO5_VIDEO_FD") == "3")
             self.play_button.set_no_show_all(not native_youtube)
             self.stop_button.set_no_show_all(not native_youtube)
+            self.quality_button.set_no_show_all(not native_youtube)
             self.button("Đóng", self.close_browser, toolbar)
             self.panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
             self.video_status = Gtk.Label(label=(
@@ -442,7 +478,7 @@ def main():
                 try:
                     self.player = subprocess.Popen(
                         [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "player.py"),
-                         url], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                         "--max-height", str(self.quality), url], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                         stderr=subprocess.DEVNULL, close_fds=True, pass_fds=(3,))
                     os.set_blocking(self.player.stdout.fileno(), False)
                 except OSError:
@@ -481,6 +517,16 @@ def main():
                 (copy_address, None),
             ])
             GLib.timeout_add_seconds(6, timeout)
+
+        def cycle_quality(self):
+            from player import next_quality
+            self.quality = next_quality(self.quality)
+            save_quality(self.quality)
+            self.quality_button.set_label("%dp" % self.quality)
+            notes = {360: "nhẹ CPU và mạng", 480: "mặc định, mượt trên Echo",
+                     720: "nét hơn, có thể giật trên Echo"}
+            self.video_status.set_text("Chất lượng Phát video: %dp (%s). Áp dụng lần phát tiếp theo."
+                                       % (self.quality, notes[self.quality]))
 
         def stop_video(self):
             if self.player is not None and self.player.poll() is None:

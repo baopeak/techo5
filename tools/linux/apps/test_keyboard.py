@@ -3,10 +3,13 @@
 No GTK/display required. Deployment owner runs these; they do not test hardware.
 """
 
+import os
+import tempfile
 import unittest
 import unicodedata
+from unittest import mock
 
-from keyboard import apply_tone, delete_grapheme
+from keyboard import apply_tone, delete_grapheme, load_quality, save_quality
 
 
 class ToneTests(unittest.TestCase):
@@ -59,6 +62,32 @@ class GraphemeTests(unittest.TestCase):
         self.assertEqual(delete_grapheme("x\U0001f1fb\U0001f1f3"), "x")
         self.assertEqual(delete_grapheme("\U0001f1fb\U0001f1f3\U0001f1fa\U0001f1f8"),
                          "\U0001f1fb\U0001f1f3")
+
+
+class QualityPreferenceTests(unittest.TestCase):
+    def test_default_and_round_trip(self):
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            self.assertEqual(load_quality(), 480)
+            save_quality(720)
+            self.assertEqual(load_quality(), 720)
+            save_quality(360)
+            self.assertEqual(load_quality(), 360)
+
+    def test_corrupt_or_unsupported_value_uses_default(self):
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            save_quality(720)
+            path = os.path.join(home, ".config", "techo5", "video-quality")
+            for text in ("1080", "garbage", ""):
+                with self.subTest(text=text):
+                    with open(path, "w") as handle:
+                        handle.write(text)
+                    self.assertEqual(load_quality(), 480)
+
+    def test_unwritable_home_is_not_fatal(self):
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            open(os.path.join(home, ".config"), "w").close()  # a file blocks the directory
+            save_quality(720)
+            self.assertEqual(load_quality(), 480)
 
 
 if __name__ == "__main__":
