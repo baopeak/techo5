@@ -17,7 +17,15 @@ With the separate application runtime installed, open **Settings → Connections
 
 On `crown`, Firefox ESR rendered Google and a real Vietnamese `đà lạt` search entered through the GTK keyboard. The page-scroll control moved a real Firefox page by 480 pixels. A public 854×480/25 fps YouTube clip (`0aMwGDsoOfc`) was severely presentation-limited through the initial mpv/Xorg prototype: 153 output frames dropped in ten seconds while decoding dropped none and the network cache stayed full. The native player subsequently logged 250 and 249 presented frames in consecutive ten-second intervals, with zero dropped frames; the device owner also reported that full-screen playback ran well. These are observations for that scenario, not a claim that every video/website works.
 
-The browser's own YouTube media utility crashed in the tested environment. **The supported playback path is the separate Phát video button followed by native full-screen playback**; mpv/Xorg video rendering has been removed from the application path. The extractor selects H.264 at no more than 480p plus AAC/Opus. DRM, paid/account-restricted videos and universal 720p/1080p playback are not supported claims. Internet access and a currently working YouTube extractor remain necessary.
+The browser's own YouTube media utility crashed in the tested environment. **The supported playback path is the separate Phát video button followed by native full-screen playback**; mpv/Xorg video rendering has been removed from the application path. The extractor selects H.264 up to the height on the keyboard's quality button (360p, 480p or 720p; 720p by default, remembered in the browser profile) plus AAC/Opus. At one height it prefers a stream of 30 fps or less, because the native player shows at most 30 frames a second. For 50/60 fps streams the daemon skips non-reference frames and deblocking that the panel never shows.
+
+Measured on `crown` at 1280×800:
+- YouTube 720p60 played at a steady 30 fps in real time, with 0–1 dropped frames per 10 s. Before this optimization it ran slower than real time.
+- 720p24 also played at full rate.
+
+1080p is not offered. Even with these shortcuts, 1080p24 decoded at only about 1.7× real time, below the margin 720p needs. It would also be scaled down to the 800-line panel anyway.
+
+DRM and paid or account-restricted videos are not supported. Internet access and a currently working YouTube extractor remain necessary.
 
 ## Runtime layout and preparation
 

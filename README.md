@@ -44,7 +44,10 @@ The app-tool sidecar source is **1.2.0**. Earlier prerelease assets are not auto
 by these source changes; do not mix old daemon/browser scripts with the new readiness protocol.
 Cloud catalog discovery and direct SDK calls are separate from a spoken model invocation:
 **real voice-triggered app control must be verified with the selected cloud model**.
-Native YouTube runs best at modest resolutions; start with 480p. The old kernel/chroot is not a
+Native YouTube quality is chosen with the 360p/480p/720p toolbar button (720p by default). 720p,
+including 60 fps sources shown at 30 fps, was measured smooth on the Show 8; 1080p is not offered.
+
+![YouTube toolbar with the 360p/480p/720p quality button](docs/screenshots/show8/apps-quality-button.png) The old kernel/chroot is not a
 modern hardened browser sandbox. Account sessions, external website availability and the
 previously observed speaker-underrun/loudness issue remain separate risks.
 Other Echo variants listed below describe upstream support, not testing of this fork.
