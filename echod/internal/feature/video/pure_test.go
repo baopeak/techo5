@@ -365,6 +365,32 @@ func TestTheDecoderArguments(t *testing.T) {
 	}
 }
 
+// A stream past 30 frames a second is shown at half its rate, so the decoder may skip the frames
+// nothing references and the deblocking: 720p60 went from slower than real time to about 2.2x on a
+// Show 8 (decode plus panel filter, measured on the device). The shortcuts name the video decoder
+// only, so the sound decoder of the same input is not handed an option it would refuse.
+func TestHighFrameRatesSkipWorkThePanelCannotShow(t *testing.T) {
+	info, _ := ParseProbe(probeMP4)
+	for _, c := range []struct {
+		fps  float64
+		skip bool
+	}{{60, true}, {59.94, true}, {50, true}, {30, false}, {29.97, false}, {24, false}, {0, false}} {
+		info.FPS = c.fps
+		a := DecodeArgs(Decoding{URL: "https://media.example.com/v.mp4", Info: info, Screen: Screen{W: 1280, H: 800}})
+		input := slices.Index(a, "-i")
+		frame, loop := slices.Index(a, "-skip_frame:v"), slices.Index(a, "-skip_loop_filter:v")
+		if !c.skip {
+			if frame >= 0 || loop >= 0 {
+				t.Errorf("%v fps skips decoding: %q", c.fps, a)
+			}
+			continue
+		}
+		if frame < 0 || loop < 0 || a[frame+1] != "noref" || a[loop+1] != "all" || frame > input || loop > input {
+			t.Errorf("%v fps: want video-only skips before the input, got %q", c.fps, a)
+		}
+	}
+}
+
 func TestSeekOffsetsBothInputsWithoutChangingOutputTimebase(t *testing.T) {
 	info, err := ParseProbe(probeMP4)
 	if err != nil {

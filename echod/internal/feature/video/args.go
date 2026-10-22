@@ -208,9 +208,15 @@ func DecodeArgs(d Decoding) []string {
 	a = append(a, netArgs(d.URL, d.CAFile, d.Insecure, d.Proxy)...)
 	_, h := d.Info.Display()
 	t := threads(int(h))
-	// Past 720p every core, and best effort even so: the decoder's own shortcuts (skipping the
-	// deblocking) make ffmpeg 8 refuse to open the picture's output when given on its command line.
+	// Past 720p every core, and best effort even so.
 	a = append(a, "-threads", strconv.Itoa(t))
+	if d.Info.FPS > 30.5 {
+		// Shown at half its rate (FrameRate), so frames nothing references and the deblocking are
+		// work the panel never shows: 720p60 went from slower than real time to about 2.2x on a
+		// Show 8. Named for the video decoder only, since ffmpeg refuses a decoder option the sound
+		// decoder of the same input would be handed and cannot take.
+		a = append(a, "-skip_frame:v", "noref", "-skip_loop_filter:v", "all")
+	}
 	if d.Offset > 0 {
 		a = append(a, "-ss", strconv.FormatFloat(d.Offset.Seconds(), 'f', 6, 64))
 	}
