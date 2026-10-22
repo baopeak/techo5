@@ -549,7 +549,7 @@ func (f *Feature) hold(ctx context.Context) error {
 	// A turn belonged to the socket that just went. Ending it here rather than letting its next
 	// write discover the fact is what stops a dropped session from leaving the microphone open for
 	// as long as the reconnect takes.
-	f.Stop()
+	f.stop()
 	// No new turn can open until this owner installs another session. Clear
 	// the old response here even if capture had already finished before EOF.
 	finishScreen(false)

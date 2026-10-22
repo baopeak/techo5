@@ -231,6 +231,13 @@ func (f *Feature) open(mode string, skip, limit time.Duration, followUp bool) er
 // going away — and the log line the caller writes is where that belongs.
 func (f *Feature) Stop() {
 	cancellationGeneration.Add(1)
+	f.stop()
+}
+
+// stop is Stop without marking an explicit cancellation. A session the cloud
+// dropped (it closes idle ones about once a minute) is the transport ending,
+// not somebody asking to retire screen actions queued by the last answer.
+func (f *Feature) stop() {
 	f.mu.Lock()
 	t, down := f.turn, f.down
 	if t != nil {

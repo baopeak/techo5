@@ -6,6 +6,47 @@ import (
 	"time"
 )
 
+func TestDroppedSessionIsNotAnExplicitCancellation(t *testing.T) {
+	// The cloud closes idle sessions about once a minute. That reconnect must not
+	// retire a screen action queued or starting from the previous answer.
+	cl := connect(t)
+	before := CancellationGeneration()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		cl.cloud.mu.Lock()
+		conn := cl.cloud.conn
+		cl.cloud.mu.Unlock()
+		if conn != nil {
+			_ = conn.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("cloud never recorded the session")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	for {
+		cl.cloud.mu.Lock()
+		opened := cl.cloud.opened
+		cl.cloud.mu.Unlock()
+		if opened >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("client did not reconnect after the cloud dropped the session")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if after := CancellationGeneration(); after != before {
+		t.Fatalf("session drop changed cancellation generation %d -> %d", before, after)
+	}
+	before = CancellationGeneration()
+	cl.f.Stop()
+	if CancellationGeneration() == before {
+		t.Fatal("explicit stop no longer marks a cancellation")
+	}
+}
+
 func TestScreenHandoffSkipsOnlyAutomaticFollowUp(t *testing.T) {
 	cl := connect(t)
 	SetAppHandoffPending(true)
