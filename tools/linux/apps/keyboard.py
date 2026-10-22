@@ -109,6 +109,7 @@ def main():
             self.set_skip_pager_hint(True)
             self.stick()
             self.buffer = ""
+            self.secret = True
             self.upper = False
             self.vietnamese = True
             self.symbols = False
@@ -155,13 +156,20 @@ def main():
             self.button("Tiến", lambda: self.send_keys("alt+Right"), toolbar)
             self.button("Cuộn lên", lambda: self.scroll_page(4), toolbar)
             self.button("Cuộn xuống", lambda: self.scroll_page(5), toolbar)
-            self.button("YouTube", self.youtube, toolbar)
+            self.button("Netflix", self.youtube, toolbar)
+            self.secret_button = self.button("Hiện chữ", self.toggle_secret, toolbar)
             self.play_button = self.button("Phát video", self.play_video, toolbar)
             self.stop_button = self.button("Hủy mở video", self.stop_video, toolbar)
             self.stop_button.set_sensitive(False)
+            native_youtube = (os.environ.get("TECHO5_APP_KIND", "youtube") == "youtube"
+                              and os.environ.get("TECHO5_VIDEO_FD") == "3")
+            self.play_button.set_no_show_all(not native_youtube)
+            self.stop_button.set_no_show_all(not native_youtube)
             self.button("Đóng", self.close_browser, toolbar)
             self.panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
-            self.video_status = Gtk.Label(label="YouTube: mở video → Phát video ở thanh này, không dùng Play trong trang")
+            self.video_status = Gtk.Label(label=(
+                "YouTube: phát trong trang hoặc bấm Phát video để mở native toàn màn hình"
+                if native_youtube else "Phát trong trang web; bấm Đóng để về đồng hồ"))
             self.video_status.get_style_context().add_class("hint")
             self.root.pack_start(self.video_status, False, False, 0)
             self.root.pack_start(self.panel, False, False, 0)
@@ -244,8 +252,14 @@ def main():
             self.buffer = apply_tone(self.buffer, mark)
             self.update_preview()
 
+        def toggle_secret(self):
+            self.secret = not self.secret
+            self.secret_button.set_label("Hiện chữ" if self.secret else "Ẩn chữ")
+            self.update_preview()
+
         def update_preview(self):
-            self.preview.set_text(self.buffer or "Soạn tiếng Việt / English tại đây")
+            text = ("•" * len(self.buffer)) if self.secret else self.buffer
+            self.preview.set_text(text or "Soạn tiếng Việt / English tại đây")
             GLib.idle_add(self.scroll_to_end)
 
         def scroll_to_end(self):
@@ -339,23 +353,24 @@ def main():
             self.child = None
             if status != 0:
                 self.queue.clear()
-                self.hint.set_text("Chưa gửi được tới Firefox. Hãy chạm cửa sổ Firefox rồi thử lại.")
+                self.hint.set_text("Chưa gửi được. Hãy chạm cửa sổ trình duyệt rồi thử lại.")
             elif callback:
                 callback(output.decode("ascii", errors="ignore"))
             GLib.timeout_add(80, self.run_next)
             return False
 
         def browser_action(self, steps):
-            # Search only visible real Firefox windows. No user text reaches argv.
+            # Target only the real browser class selected by the owning session.
             # Queue the search and its action atomically, including while another action runs.
             def found(output):
                 windows = [line for line in output.splitlines() if line.isdecimal()]
                 if not windows:
-                    self.hint.set_text("Không tìm thấy cửa sổ Firefox.")
+                    self.hint.set_text("Không tìm thấy cửa sổ trình duyệt.")
                     return
                 actions = [(["xdotool", "windowactivate", "--sync", windows[-1]], None)] + steps
                 self.queue.extendleft(reversed(actions))
-            self.enqueue([(["xdotool", "search", "--onlyvisible", "--class", "firefox"], found)])
+            self.enqueue([(["xdotool", "search", "--onlyvisible", "--class",
+                            os.environ.get("TECHO5_BROWSER_CLASS", "firefox")], found)])
 
         def send_keys(self, key):
             self.browser_action([(["xdotool", "key", "--clearmodifiers", key], None)])
@@ -384,11 +399,12 @@ def main():
                 steps.append((["xdotool", "key", "--clearmodifiers", "Return"], None))
             if steps:
                 self.browser_action(steps)
+                self.clear()
 
         def youtube(self):
             self.browser_action([
                 (["xdotool", "key", "--clearmodifiers", "ctrl+l"], None),
-                self.clipboard_step("https://www.youtube.com/"),
+                self.clipboard_step("https://www.netflix.com/browse"),
                 (["xdotool", "key", "--clearmodifiers", "ctrl+v"], None),
                 (["xdotool", "key", "--clearmodifiers", "Return"], None),
             ])
@@ -403,15 +419,15 @@ def main():
             self.video_request += 1
             token = self.video_request
             self.play_button.set_sensitive(False)
-            self.video_status.set_text("Đang đọc địa chỉ video từ Firefox…")
+            self.video_status.set_text("Đang đọc địa chỉ video từ trình duyệt…")
 
             def received(clipboard, text, unused):
                 if self.closed or token != self.video_request or not self.reading_video:
                     return
                 if not text:
-                    # XTest key delivery precedes Firefox's asynchronous
-                    # clipboard ownership change. Wait without blocking GTK.
-                    GLib.timeout_add(100, lambda: (self.clipboard.request_text(received, None), False)[1])
+                    # Chromium can process Ctrl+L after the first Ctrl+C.
+                    # Retry a fresh copy within the existing deadline.
+                    GLib.timeout_add(100, copy_address)
                     return
                 self.reading_video = False
                 try:
@@ -440,21 +456,29 @@ def main():
                 GLib.timeout_add(200, self.poll_player)
 
             def request():
-                self.clipboard.request_text(received, None)
+                if not self.closed and token == self.video_request and self.reading_video:
+                    self.clipboard.request_text(received, None)
 
             def timeout():
                 if self.reading_video and token == self.video_request:
                     self.reading_video = False
                     self.play_button.set_sensitive(True)
-                    self.video_status.set_text("Không đọc được URL. Hãy chạm Firefox rồi thử lại.")
+                    self.video_status.set_text("Không đọc được URL. Hãy chạm trình duyệt rồi thử lại.")
+                return False
+
+            def copy_address():
+                if not self.closed and token == self.video_request and self.reading_video:
+                    self.browser_action([
+                        (["xdotool", "key", "--clearmodifiers", "ctrl+l"], None),
+                        (["xdotool", "key", "--clearmodifiers", "ctrl+c"], None),
+                        (["xdotool", "key", "--clearmodifiers", "Escape"], None),
+                        (request, None),
+                    ])
                 return False
 
             self.browser_action([
                 self.clipboard_step(""),
-                (["xdotool", "key", "--clearmodifiers", "ctrl+l"], None),
-                (["xdotool", "key", "--clearmodifiers", "ctrl+c"], None),
-                (["xdotool", "key", "--clearmodifiers", "Escape"], None),
-                (request, None),
+                (copy_address, None),
             ])
             GLib.timeout_add_seconds(6, timeout)
 
@@ -498,7 +522,7 @@ def main():
 
         def close_browser(self):
             self.stop_video()
-            self.send_keys("ctrl+q")
+            self.send_keys("alt+F4" if os.environ.get("TECHO5_BROWSER_CLASS") == "chromium" else "ctrl+q")
 
         def on_key(self, unused, event):
             if event.keyval == Gdk.KEY_Escape:

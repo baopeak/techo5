@@ -1,8 +1,9 @@
-# Optional on-device Exa MCP search
+# Optional on-device Xiaozhi MCP search and app control
 
-This fork supplies an optional search sidecar in [`xiaozhi-search/`](../xiaozhi-search/).
+This fork supplies an optional MCP sidecar in [`xiaozhi-search/`](../xiaozhi-search/).
 It is a separate Go module and process, **not part of `echod`**. The device connects directly to
 Xiaozhi's cloud MCP endpoint and Exa's official keyless MCP service; no laptop bridge is needed.
+The same cloud connection exposes four bounded on-device display tools through `echod`.
 The ordinary [base rootfs build](building.md#4-the-root-filesystem) does not add it automatically.
 
 ## Scope and privacy
@@ -29,6 +30,50 @@ never publish it, put it in command history, or include it in screenshots, logs,
 release assets. The current client accepts only the official `api.xiaozhi.me` WSS MCP endpoint;
 see [`readEndpoint`](../xiaozhi-search/main.go), not the voice backend's host setting.
 
+## On-device screen tools (sidecar 1.2.0)
+
+All five tools use the **existing** private Xiaozhi WSS MCP connection. There is no second
+cloud endpoint, TCP listener, arbitrary URL argument, or shell-command argument.
+
+| Tool | Arguments | Meaning |
+| --- | --- | --- |
+| `web_search` | `query`, optional `max_results` (1–5) | Existing read-only Exa search, returning source excerpts and URLs. |
+| `open_app` | `app`: `browser`, `youtube`, or `netflix` | Request the named app on the Echo screen. |
+| `search_on_screen` | `target`: `web`, `youtube`, or `netflix`; `query` | Navigate to provider search on the Echo screen, not return search evidence. |
+| `close_app` | none | Cancel pending app work and request asynchronous closure. |
+| `app_status` | none | Read the daemon's actual display-app state. |
+
+Every input schema rejects extra properties. Display queries must contain 2–500 Unicode code
+points after trimming. Provider URLs are built by the daemon, never supplied by the cloud.
+Opening, navigating, and closing are state-mutating tools; only `app_status` is read-only.
+Screen searches send queries to the selected provider; tool arguments/results also pass through
+Xiaozhi's cloud and model. Neither queries nor URLs are included in app-control results/status files.
+
+Successful screen-tool results contain `ok`, `state`, and optional `app`/`request_id`.
+`queued` means accepted for later execution; `starting` means startup is in progress.
+**Neither means the app is visible.** Only `open`, following browser readiness acknowledgement,
+confirms a ready browser window; it does not prove account login, Netflix playback, or a
+successful provider search. `closed` confirms completion; a queued close is not yet closed.
+Check `app_status` rather than claiming success prematurely. No automatic retry is performed:
+a connection failure after sending may leave the action queued, so inspect status before retrying.
+Unavailable control, daemon rejection, malformed/oversized responses, and a three-second bridge
+deadline fail the tool rather than returning fallback text as success.
+
+The local bridge is only `/run/techo5-app-control/control.sock`, owned by root and dedicated
+group `appcontrol` (`65532`), mode `0660`, in a root-owned `0750` directory with that group.
+The packaged rootfs must reserve `appcontrol:x:65532:` in `/etc/group` (do not reuse Alpine's
+`nogroup` GID `65533`). `echod` validates peer UID `65534` (or root for diagnostics).
+One newline-delimited JSON request/response is limited to 4096 bytes each; unknown fields,
+invalid enums, invalid UTF-8, and trailing JSON are rejected. A compatible daemon and browser
+launcher are required; an older search-only image reports app control unavailable.
+
+Voice-busy requests are queued without waiting for the current cloud tool call to finish.
+The daemon applies latest-wins app intent after voice becomes idle, without bypassing PIN/setup,
+phone, update, or off-screen safety priorities. Explicit close/mute/cancellation and safety
+interruptions must not cause an old queued request to reopen later. The sidecar does not launch
+browser processes itself or replace the existing native media/voice path.
+
+
 ## Build and package
 
 Use Go **1.26 or later**. From the repository root in a POSIX shell (Linux or WSL):
@@ -41,9 +86,10 @@ cd ..
 ```
 
 The result is a static ARMv7 sidecar. Build/test ownership is
-[`go.mod`](../xiaozhi-search/go.mod), [`main_test.go`](../xiaozhi-search/main_test.go), and
-[`main.go`](../xiaozhi-search/main.go). The corrected sidecar is version `1.1.1`; the earlier
-device-reboot evidence applies to `1.1.0`, not this new binary.
+[`go.mod`](../xiaozhi-search/go.mod), [`main_test.go`](../xiaozhi-search/main_test.go),
+[`app_control_test.go`](../xiaozhi-search/app_control_test.go),
+[`main.go`](../xiaozhi-search/main.go), and [`app_control.go`](../xiaozhi-search/app_control.go).
+Version `1.2.0` adds app-control tools; earlier search/reboot observations do not validate this binary.
 A generic local build is not promised to match a prerelease checksum: release build IDs and inputs
 also matter. Verify downloaded artifacts against the release's checksum before packaging them.
 
@@ -71,8 +117,9 @@ provides `setpriv` as a BusyBox applet, not an additional package.
 The [launcher](../xiaozhi-search/xiaozhi-search-run) is the executable owner for startup and resource
 settings. It waits for the private enable marker, creates RAM-only status storage, and starts the
 service through init's respawn supervision. The [Linux privilege setup](../xiaozhi-search/priv_linux.go)
-drops to UID/GID `65534`, retaining only supplementary group `inet` (`3003`), which `crown` needs
-for networking. Do not replace this with a root-running service or discard that network group.
+drops to UID/GID `65534`, retaining supplementary group `inet` (`3003`), which `crown` needs
+for networking, and app-control group `65532`. Do not run it as root, discard `3003`, or broaden
+the bridge permissions. The existing launcher invokes this privilege setup; no extra listener is needed.
 
 Repack the staged rootfs as a gzip tar archive with numeric ownership preserved and files rooted
 at `./`, as in the base image. Include no private `/data` contents or endpoint file. Keep the
@@ -147,9 +194,13 @@ its owner/mode, then recreate `enabled`.
 ## Observe and test
 
 Read `/run/xiaozhi-search/status.json` on the device. It contains connection, initialization,
-tool-catalog and search-call counters, not endpoint tokens, queries or results. It is RAM-only and
-resets on reboot. The launcher discards process stdout/stderr; do not add credential-bearing debug
-logs to a public report.
+tool-catalog and call counters, not endpoint tokens, queries or results. `tool_calls` counts
+executed handlers; `successful_searches` remains specific to Exa `web_search`.
+`open_app_calls`, `search_on_screen_calls`, `close_app_calls`, and `app_status_calls` are distinct
+app-tool counters. `app_tool_errors` records bridge/handler failures, while `app_queued_responses`
+counts only queued acknowledgements, **not apps opened**. Schema-rejected calls may not reach handlers.
+Status is RAM-only and resets on reboot. The launcher discards process stdout/stderr;
+do not add credential-bearing debug logs to a public report.
 
 For a direct provider check, the binary accepts `-search` with a non-sensitive public query.
 This contacts Exa and prints excerpts; it does **not** prove cloud model tool calling. In Xiaozhi,

@@ -6,13 +6,16 @@ import pathlib
 import resource
 import secrets
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 
+from urllib.parse import parse_qsl, urlsplit
 HOME = pathlib.Path('/home/browser')
 APP = pathlib.Path('/usr/local/share/techo5-apps')
+ENGINE = os.environ.get('TECHO5_TRIAL_BROWSER', 'firefox')
 stop = False
 children = []
 private = None
@@ -25,6 +28,49 @@ def request_stop(_signum, _frame):
 
 for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
     signal.signal(sig, request_stop)
+
+
+def initial_browser_url(kind):
+    raw = os.environ.get('TECHO5_APP_URL')
+    if raw is None:
+        return 'https://www.youtube.com/' if kind == 'youtube' else 'https://www.google.com/'
+    try:
+        if len(raw) > 8192:
+            raise ValueError()
+        url = urlsplit(raw)
+        routes = {
+            'www.google.com': {'/': None, '/search': 'q'},
+            'www.youtube.com': {'/': None, '/results': 'search_query'},
+            'www.netflix.com': {'/browse': None, '/search': 'q'},
+        }
+        if url.scheme != 'https' or url.netloc not in routes or url.fragment:
+            raise ValueError()
+        paths = routes[url.netloc]
+        if url.path not in paths:
+            raise ValueError()
+        key = paths[url.path]
+        pairs = parse_qsl(url.query, keep_blank_values=True, errors='strict')
+        if key is None:
+            if pairs or url.query:
+                raise ValueError()
+        elif len(pairs) != 1 or pairs[0][0] != key or not 2 <= len(pairs[0][1].strip()) <= 500:
+            raise ValueError()
+        return raw
+    except (ValueError, UnicodeError):
+        raise ValueError('unsupported app destination') from None
+
+
+def notify_browser_ready():
+    value = os.environ.get('TECHO5_APP_READY_FD')
+    if value is None:
+        return
+    if value != '4' or not stat.S_ISFIFO(os.fstat(4).st_mode):
+        raise RuntimeError('invalid app readiness channel')
+    try:
+        if os.write(4, b'ready\n') != 6:
+            raise RuntimeError('app readiness channel ended')
+    finally:
+        os.close(4)
 
 
 def limits():
@@ -96,6 +142,10 @@ def prepare_browser():
     home = os.open(HOME, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     runtime = os.open('/run/user/1000', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
+        if ENGINE == 'chromium':
+            os.close(directory(home, 'chromium-profile', 1000, 0o700))
+            os.close(directory(runtime, 'pulse', 1000, 0o700))
+            return
         profile = directory(home, 'profile', 1000, 0o700)
         try:
             fd = os.open('user.js', os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
@@ -106,7 +156,15 @@ def prepare_browser():
                             'user_pref("browser.tabs.warnOnClose", false);\n'
                             'user_pref("gfx.webrender.software", true);\n'
                             'user_pref("dom.w3c_touch_events.enabled", 1);\n'
-                            'user_pref("browser.shell.checkDefaultBrowser", false);\n')
+                            'user_pref("browser.shell.checkDefaultBrowser", false);\n'
+                            'user_pref("media.eme.enabled", true);\n'
+                            'user_pref("media.gmp-widevinecdm.enabled", true);\n'
+                            'user_pref("media.gmp-widevinecdm.visible", true);\n'
+                            'user_pref("media.gmp-widevinecdm.version", "4.10.2662.3");\n'
+                            'user_pref("media.gmp-widevinecdm.abi", "aarch64-gcc3");\n'
+                            'user_pref("media.gmp-widevinecdm.forceSupported", true);\n'
+                            'user_pref("media.gmp-manager.updateEnabled", false);\n'
+                            'user_pref("media.autoplay.default", 0);\n')
         finally:
             os.close(profile)
         os.close(directory(runtime, 'pulse', 1000, 0o700))
@@ -206,6 +264,9 @@ def main():
     global private
     if len(sys.argv) != 2 or sys.argv[1] not in ('web', 'youtube'):
         raise ValueError('expected web or youtube')
+    if ENGINE not in ('firefox', 'chromium'):
+        raise ValueError('unsupported trial browser')
+    initial_url = initial_browser_url(sys.argv[1])
     # Adopt orphaned grandchildren for cleanup, without creating child sessions.
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
@@ -222,6 +283,7 @@ def main():
     env = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': str(HOME), 'USER': 'browser',
            'LOGNAME': 'browser', 'DISPLAY': ':5', 'XAUTHORITY': str(auth),
            'XDG_RUNTIME_DIR': str(runtime), 'LANG': 'C.UTF-8', 'GDK_BACKEND': 'x11',
+           'MOZ_GMP_PATH': '/opt/WidevineCdm/gmp-widevinecdm/latest',
            'MOZ_ENABLE_WAYLAND': '0', 'MOZ_USE_XINPUT2': '1', 'LIBGL_ALWAYS_SOFTWARE': '1',
            'PULSE_SERVER': 'unix:/run/user/1000/pulse/native'}
     result = subprocess.run(['/usr/bin/xauth', '-q', '-f', str(auth)], env=env,
@@ -263,6 +325,8 @@ def main():
 
     wait_ready(wm_ready, watched, 'window manager', 6)
     keyboard_env = dict(env)
+    keyboard_env['TECHO5_BROWSER_CLASS'] = ENGINE
+    keyboard_env['TECHO5_APP_KIND'] = sys.argv[1]
     keyboard_fds = ()
     if os.environ.get('TECHO5_VIDEO_FD') == '3':
         os.fstat(3)  # Fail closed if the native supervisor did not supply its pipe.
@@ -288,14 +352,17 @@ def main():
         return None
 
     area = wait_ready(keyboard_ready, watched, 'keyboard dock reservation', 10)
-    url = 'https://www.youtube.com/' if sys.argv[1] == 'youtube' else 'https://www.google.com/'
-    firefox = start(['/usr/bin/firefox-esr', '--no-remote', '--profile',
-                     str(HOME / 'profile'), url], user=True, env=env)
+    url = initial_url
+    browser_args = (['/usr/bin/chromium', '--disable-gpu', '--no-first-run',
+                     '--no-default-browser-check', '--user-data-dir=' + str(HOME / 'chromium-profile'),
+                     url] if ENGINE == 'chromium' else
+                    ['/usr/bin/firefox-esr', '--no-remote', '--profile', str(HOME / 'profile'), url])
+    firefox = start(browser_args, user=True, env=env)
     watched.append(firefox)
 
     def browser_window():
         windows = query(['/usr/bin/xdotool', 'search', '--onlyvisible', '--class',
-                         'firefox'], env).splitlines()
+                         ENGINE], env).splitlines()
         return windows[-1] if windows and windows[-1].isdigit() else None
 
     window = wait_ready(browser_window, watched, 'browser window', 25)
@@ -316,16 +383,21 @@ def main():
         work = keyboard_ready()
         if not work:
             return False
-        geometry = query(['/usr/bin/xdotool', 'getwindowgeometry', '--shell', window], env)
+        # xdotool doubles reparented titlebar offsets in the ARM64 runtime.
+        # Use the X server's actual client coordinates for both runtimes.
+        geometry = query(['/usr/bin/xwininfo', '-id', window], env)
         try:
-            values = dict(line.split('=', 1) for line in geometry.splitlines())
-            x, y, width, height = (int(values[key]) for key in ('X', 'Y', 'WIDTH', 'HEIGHT'))
+            values = {line.split(':', 1)[0].strip(): line.split(':', 1)[1].strip()
+                      for line in geometry.splitlines() if ':' in line}
+            x, y, width, height = (int(values[key]) for key in
+                                  ('Absolute upper-left X', 'Absolute upper-left Y', 'Width', 'Height'))
         except (KeyError, ValueError):
             return False
         return (width > 1 and height > 1 and x >= work[0] and y >= work[1] and
                 x + width <= work[0] + work[2] and y + height <= work[1] + work[3])
 
     wait_ready(browser_ready, watched, 'browser usable work-area geometry', 5)
+    notify_browser_ready()
     while not stop and all(p.poll() is None for p in watched):
         time.sleep(.1)
     if stop:
@@ -359,19 +431,19 @@ def cleanup():
         time.sleep(.05)
 
 
-try:
-    code = main()
-except Exception as exc:
-    # Do not stringify subprocess errors or commands: xauth stdin contains a secret.
-    detail = str(exc) if type(exc) is RuntimeError else type(exc).__name__
-    print('Local browser session failed:', detail, file=sys.stderr)
-    code = 1
-finally:
-    cleanup()
-    if private is not None:
-        # The directory is root-owned and never writable by the browser. Unlink
-        # entries without opening/following them, including xauth lock sidecars.
-        for entry in private.iterdir():
-            entry.unlink()
-        private.rmdir()
-sys.exit(code)
+if __name__ == '__main__':
+    try:
+        code = main()
+    except Exception as exc:
+        # Do not stringify subprocess errors: commands can contain destinations.
+        detail = str(exc) if type(exc) is RuntimeError else type(exc).__name__
+        print('Local browser session failed:', detail, file=sys.stderr)
+        code = 1
+    finally:
+        cleanup()
+        if private is not None:
+            # Never open or follow entries below the root-owned authority directory.
+            for entry in private.iterdir():
+                entry.unlink()
+            private.rmdir()
+    sys.exit(code)

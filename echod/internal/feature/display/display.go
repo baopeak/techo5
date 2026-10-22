@@ -907,6 +907,7 @@ func (d *Display) liftNightLight(by string) {
 // gesture is a finger on the panel. A dark screen only lights up; otherwise a tap is the action
 // button and a vertical swipe the volume.
 func (d *Display) gesture(g touch.Gesture) {
+	d.apps.cancelIntent()
 	if d.apps.active() {
 		return // Xorg owns input until launcher cleanup has exited.
 	}
@@ -2224,6 +2225,12 @@ func (d *Display) Close() error {
 // on or the volume is showing, and at once when something changes.
 func (d *Display) Run(ctx context.Context) error {
 	defer d.closeApps()
+	stopControl, err := d.runAppControl(ctx)
+	if err != nil {
+		slog.Warn("app control unavailable", "err", err)
+	} else {
+		defer stopControl()
+	}
 	tick := time.NewTimer(time.Hour)
 	defer tick.Stop()
 	go d.settle(ctx)

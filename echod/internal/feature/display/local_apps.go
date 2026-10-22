@@ -21,6 +21,7 @@ import (
 	"github.com/HuskerMinion/techo5/echod/internal/feature/phone"
 	"github.com/HuskerMinion/techo5/echod/internal/feature/setup"
 	"github.com/HuskerMinion/techo5/echod/internal/feature/video"
+	"github.com/HuskerMinion/techo5/echod/internal/feature/xiaozhi"
 	esphome "github.com/ygelfand/go-esphome-device"
 )
 
@@ -98,23 +99,35 @@ func (p *browserPCM) Read(dst []byte) (int, error) {
 // the frame loop calls step: acquiring the lease can never race a native paint.
 // The lease includes launcher cleanup, not merely the browser's lifetime.
 type localApps struct {
-	mu         sync.Mutex
-	requested  string
-	leased     bool
-	cmd        *exec.Cmd
-	audio      *browserPCM
-	audioReady chan error
-	audioTrack media.ReceivedTrack
-	done       chan error
-	reaped     bool
-	stopping   time.Time
-	killed     bool
-	kind       string
-	videoPipe  *os.File
-	videoReady chan browserVideoRequest
-	pending    *browserVideoRequest
-	nativeID   uint64
-	returnKind string
+	mu               sync.Mutex
+	requested        string
+	leased           bool
+	cmd              *exec.Cmd
+	audio            *browserPCM
+	audioReady       chan error
+	audioTrack       media.ReceivedTrack
+	done             chan error
+	reaped           bool
+	stopping         time.Time
+	killed           bool
+	kind             string
+	videoPipe        *os.File
+	videoReady       chan browserVideoRequest
+	pending          *browserVideoRequest
+	nativeID         uint64
+	nativeDone       <-chan struct{}
+	returnKind       string
+	intent           *appIntent
+	control          appControlResponse
+	cancelGeneration uint64
+	nextRequest      uint64
+	voiceBusy        bool
+	launchURL        string
+	activeURL        string
+	returnURL        string
+	generation       uint64
+	readyPipe        *os.File
+	browserReady     chan browserReadyResult
 }
 
 func trustedLauncher(path string) error {
@@ -147,10 +160,17 @@ func trustedLauncher(path string) error {
 }
 
 func (a *localApps) request(kind string) {
+	// Normal buttons supersede a deferred MCP request too.
 	if kind != "web" && kind != "youtube" && kind != "stop" {
 		return
 	}
 	a.mu.Lock()
+	a.intent = nil
+	xiaozhi.SetAppHandoffPending(false)
+	if kind == "stop" && a.control.State != "error" {
+		a.control.State = "starting"
+	}
+	a.launchURL = ""
 	// A second start is deliberately ignored, never queued behind a running app.
 	if kind == "stop" || (!a.leased && a.requested == "" && a.pending == nil && a.nativeID == 0) {
 		a.requested = kind
@@ -174,22 +194,41 @@ func (a *localApps) startCommand(cmd *exec.Cmd, wake func()) error {
 	}
 	a.cmd, a.done, a.reaped = cmd, make(chan error, 1), false
 	a.stopping, a.killed = time.Time{}, false
-	go func() { a.done <- cmd.Wait(); wake() }()
+	done := a.done
+	go func() { done <- cmd.Wait(); wake() }()
 	return nil
 }
 
 // nativeReturn consumes ownership only when our video really finished or a
 // newer session actually began. A DLNA question alone is not a replacement.
 func (a *localApps) nativeReturn(st video.State) string {
+	return a.nativeReturnAfter(st, video.Get().StopIDDone, func() {})
+}
+
+func (a *localApps) nativeReturnAfter(st video.State, completed func(uint64) <-chan struct{}, wake func()) string {
 	if st.LastID > a.nativeID {
-		a.nativeID, a.returnKind = 0, ""
+		a.nativeID, a.returnKind, a.returnURL = 0, "", ""
 		return ""
 	}
 	if st.Active() || st.AskID != 0 {
 		return ""
 	}
+	// Idle publishes before a stopped or naturally-ended decoder has reaped.
+	// Keep the destination and public ID until its actual completion barrier.
+	if a.nativeDone == nil {
+		a.nativeDone = completed(a.nativeID)
+		done := a.nativeDone
+		go func() { <-done; wake() }()
+	}
+	select {
+	case <-a.nativeDone:
+		a.nativeDone = nil
+	default:
+		return ""
+	}
 	a.nativeID = 0
 	kind := a.returnKind
+	a.launchURL, a.returnURL = a.returnURL, ""
 	a.returnKind = ""
 	return kind
 }
@@ -199,6 +238,7 @@ func (a *localApps) nativeStarted(id uint64, err error) {
 		// A denied request or synchronous startup failure must return the
 		// browser, not retry the same native request in a playback loop.
 		a.requested, a.returnKind = a.returnKind, ""
+		a.launchURL, a.returnURL = a.returnURL, ""
 		slog.Warn("browser native video unavailable")
 		return
 	}
@@ -209,20 +249,26 @@ func (a *localApps) nativeStarted(id uint64, err error) {
 func (a *localApps) step(priority bool, now time.Time, wake func()) (bool, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.prepareControl(priority)
+	busy := a.voiceBusy
 	request := a.requested
 	a.requested = ""
 	// Explicit stop and higher-priority UI cancel both sides of the handoff.
 	// StopID cannot interrupt a newer replacement started by another controller.
-	if priority || request == "stop" {
-		a.pending, a.returnKind = nil, ""
-		if a.nativeID != 0 {
-			video.Get().StopID(a.nativeID)
-			a.nativeID = 0
+	if priority || busy || request == "stop" {
+		a.pending, a.returnKind, a.returnURL = nil, "", ""
+		if a.nativeID != 0 && a.nativeDone == nil {
+			a.nativeDone = video.Get().StopIDDone(a.nativeID)
+			done := a.nativeDone
+			go func() { <-done; wake() }()
 		}
+	}
+	if a.returnKind == "" && !a.finishNativeStop() {
+		return a.leased, false
 	}
 	if !a.leased {
 		if a.nativeID != 0 {
-			request = a.nativeReturn(video.Get().State())
+			request = a.nativeReturnAfter(video.Get().State(), video.Get().StopIDDone, wake)
 			if request == "" {
 				return false, false
 			}
@@ -240,20 +286,33 @@ func (a *localApps) step(priority bool, now time.Time, wake func()) (bool, bool)
 			a.nativeStarted(id, err)
 			return false, false
 		}
+		if busy && !priority && request != "stop" {
+			a.requested = request
+			return false, false
+		}
 		if request == "" || request == "stop" || priority {
+			if a.intent == nil && a.control.State != "error" {
+				a.control.State, a.control.App = "closed", ""
+			}
 			return false, false
 		}
 		if err := trustedLauncher(browserLauncher); err != nil {
 			slog.Warn("browser session unavailable", "err", err)
+			a.controlError("browser launcher unavailable; install the on-device browser runtime")
 			return false, false
 		}
 		cmd := exec.Command(browserLauncher, request)
 		// Never inherit API keys, tokens, preload hooks or daemon credentials.
 		cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "HOME=/root", "LANG=C.UTF-8", "TECHO5_VIDEO_FD=3"}
 		cmd.Dir = "/"
+		if a.launchURL != "" {
+			cmd.Env = append(cmd.Env, "TECHO5_APP_URL="+a.launchURL)
+		}
+		cmd.Env = append(cmd.Env, "TECHO5_APP_READY_FD=4")
 		audio, output, err := os.Pipe()
 		if err != nil {
 			slog.Warn("browser audio pipe failed", "err", err)
+			a.controlError("browser audio pipe unavailable")
 			return false, false
 		}
 		videoInput, videoOutput, err := os.Pipe()
@@ -261,11 +320,24 @@ func (a *localApps) step(priority bool, now time.Time, wake func()) (bool, bool)
 			_ = audio.Close()
 			_ = output.Close()
 			slog.Warn("browser video pipe failed", "err", err)
+			a.controlError("browser video pipe unavailable")
 			return false, false
 		}
-		cmd.ExtraFiles = []*os.File{videoOutput}
+		readyInput, readyOutput, err := os.Pipe()
+		if err != nil {
+			audio.Close()
+			output.Close()
+			videoInput.Close()
+			videoOutput.Close()
+			a.controlError("browser readiness pipe unavailable")
+			return false, false
+		}
+		cmd.ExtraFiles = []*os.File{videoOutput, readyOutput}
 		cmd.Stdout = output
 		if err := a.startCommand(cmd, wake); err != nil {
+			readyInput.Close()
+			readyOutput.Close()
+			a.controlError("browser launcher could not start; check the installed runtime")
 			_ = audio.Close()
 			_ = output.Close()
 			_ = videoInput.Close()
@@ -275,6 +347,20 @@ func (a *localApps) step(priority bool, now time.Time, wake func()) (bool, bool)
 		}
 		_ = output.Close()
 		_ = videoOutput.Close()
+		_ = readyOutput.Close()
+		a.generation++
+		a.readReady(readyInput, wake)
+		a.activeURL, a.launchURL = a.launchURL, ""
+		if a.control.State != "starting" || a.control.App == "" {
+			app := "browser"
+			if request == "youtube" {
+				app = "youtube"
+			}
+			if a.activeURL != "" && a.control.App != "" {
+				app = a.control.App
+			}
+			a.control = appControlResponse{OK: true, State: "starting", App: app}
+		}
 		a.kind = request
 		a.readVideo(videoInput, wake)
 		a.audio = &browserPCM{File: audio}
@@ -296,24 +382,29 @@ func (a *localApps) step(priority bool, now time.Time, wake func()) (bool, bool)
 			a.reaped = true
 			if err != nil && a.stopping.IsZero() {
 				slog.Warn("browser session exited", "err", err)
+				a.controlError("browser session exited before close; check the installed runtime")
+			}
+			if a.control.State == "starting" && a.stopping.IsZero() && request != "stop" && !priority && !busy {
+				a.controlError("browser exited before readiness; check the installed runtime")
 			}
 		default:
 		}
 	}
-	if a.videoReady != nil && a.stopping.IsZero() && !priority && request != "stop" {
+	if a.videoReady != nil && a.stopping.IsZero() && !priority && !busy && request != "stop" {
 		select {
 		case req, ok := <-a.videoReady:
 			a.videoReady = nil
 			if ok {
 				a.pending = &req
 				a.returnKind = a.kind
+				a.returnURL = a.activeURL
 			}
 		default:
 		}
 	}
 	pid := a.cmd.Process.Pid
 	if a.reaped && errors.Is(syscall.Kill(-pid, 0), syscall.ESRCH) {
-		if a.videoReady != nil && a.stopping.IsZero() && !priority && request != "stop" {
+		if a.videoReady != nil && a.stopping.IsZero() && !priority && !busy && request != "stop" {
 			// Child exit can precede scheduling its framed-request reader.
 			return true, false
 		}
@@ -327,16 +418,41 @@ func (a *localApps) step(priority bool, now time.Time, wake func()) (bool, bool)
 			a.videoPipe = nil
 		}
 		a.videoReady = nil
+		a.clearReady()
+		if a.intent == nil && a.pending == nil && a.nativeID == 0 && a.control.State != "error" {
+			a.control.State, a.control.App = "closed", ""
+		}
 		a.cmd, a.done, a.leased, a.audioReady = nil, nil, false, nil
 		a.audioTrack = media.ReceivedTrack{}
 		return false, true
 	}
-	if a.audioReady != nil && a.stopping.IsZero() && a.pending == nil && !priority && request != "stop" && !a.reaped {
+	if a.browserReady != nil && a.stopping.IsZero() && !priority && !busy && request != "stop" {
+		select {
+		case result := <-a.browserReady:
+			if result.generation == a.generation {
+				a.clearReady()
+			}
+			if result.generation == a.generation {
+				if a.controlCanceled() {
+					request = "stop"
+				} else if result.err != nil {
+					a.controlError("browser did not acknowledge readiness; check the installed runtime")
+					request = "stop"
+				} else if a.intent == nil {
+					a.control.OK, a.control.State, a.control.Error = true, "open", ""
+					xiaozhi.SetAppHandoffPending(false)
+				}
+			}
+		default:
+		}
+	}
+	if a.audioReady != nil && a.stopping.IsZero() && a.pending == nil && !priority && !busy && request != "stop" && !a.reaped {
 		select {
 		case err := <-a.audioReady:
 			a.audioReady = nil
 			if err != nil {
 				slog.Warn("browser PCM startup failed", "err", err)
+				a.controlError("browser audio startup failed; check the installed runtime")
 				request = "stop"
 			} else {
 				// The private Pulse sink emits PCM, never physical mic audio.
@@ -345,9 +461,10 @@ func (a *localApps) step(priority bool, now time.Time, wake func()) (bool, bool)
 		default:
 		}
 	}
-	if priority || request == "stop" || a.reaped || a.pending != nil {
+	if priority || busy || request == "stop" || a.reaped || a.pending != nil {
 		if a.stopping.IsZero() {
 			a.stopping = now
+			a.clearReady()
 			a.audioReady = nil
 			if a.audio != nil {
 				a.audioTrack.Stop()
@@ -394,9 +511,14 @@ func (d *Display) appFrame(now time.Time) bool {
 	if d.apps.active() {
 		d.videoLive = false
 	}
-	priority := !d.on || d.view.Phase != "idle" || d.updateShown(now) || d.wifiOpen || d.booting
+	busy := d.view.Phase != "idle"
+	priority := !d.on || d.updateShown(now) || d.wifiOpen || d.booting
 	d.mu.Unlock()
+	busy = busy || xiaozhi.AnswerPlaying()
 	priority = priority || d.ringing(now).any() || phone.Get().State().Phase != phone.Idle || pinIsOpen() || setup.Get().Waiting()
+	d.apps.mu.Lock()
+	d.apps.voiceBusy = busy
+	d.apps.mu.Unlock()
 	owned, released := d.apps.step(priority, now, d.wake)
 	if released {
 		d.dev.InvalidateFrames()
@@ -418,7 +540,7 @@ func (d *Display) appFrame(now time.Time) bool {
 func (d *Display) closeApps() {
 	d.apps.request("stop")
 	d.apps.step(true, time.Now(), d.wake)
-	for d.apps.active() {
+	for d.apps.shutdownPending() {
 		d.apps.step(true, time.Now(), d.wake)
 		time.Sleep(appPoll)
 	}

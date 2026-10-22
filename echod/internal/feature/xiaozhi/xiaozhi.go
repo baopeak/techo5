@@ -707,6 +707,8 @@ func (f *Feature) speech(s *Speech) {
 	// Snapshot before publishing completion: a new explicit wake may rearm
 	// the conversation while listeners receive the old answer's completion.
 	ended := f.conversationEnded.Load()
+	handoffEpoch := appHandoffEpoch.Load()
+	handoffAccepted := appHandoffPending.Load()
 	slog.Info("xiaozhi: speech ended",
 		"speech", s.ID, "state", s.State,
 		"packets", s.Packets, "bytes", s.Bytes, "seconds", s.Seconds, "kbps", s.Kbps,
@@ -725,8 +727,8 @@ func (f *Feature) speech(s *Speech) {
 		answered.mu.Lock()
 		fn := answered.fn
 		answered.mu.Unlock()
-		if fn != nil {
-			safe.Go("xiaozhi follow-up", fn)
+		if fn != nil && !handoffAccepted {
+			safe.Go("xiaozhi follow-up", func() { runAnswerFollowUp(handoffEpoch, fn) })
 		}
 	}
 }

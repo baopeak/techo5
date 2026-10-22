@@ -74,6 +74,10 @@ type Feature struct {
 	seekHead  int
 	seeking   bool // one worker preserves the order in which gestures were received
 
+	// owned tracks run teardown by public ID, including retired seek generations.
+	// Entries disappear only after the last session.run has returned. Protected by mu.
+	owned map[uint64]*ownedRuns
+
 	// publish is a nudge to the goroutine that tells Home Assistant.
 	publish chan struct{}
 
@@ -85,6 +89,46 @@ type seekCommand struct {
 	id       uint64
 	at       time.Duration
 	relative bool
+}
+
+type ownedRuns struct {
+	count int
+	done  chan struct{}
+}
+
+var stoppedDone = func() <-chan struct{} {
+	done := make(chan struct{})
+	close(done)
+	return done
+}()
+
+// addRunLocked registers ownership before a session is visible to controllers.
+func (f *Feature) addRunLocked(id uint64) {
+	if f.owned == nil {
+		f.owned = make(map[uint64]*ownedRuns)
+	}
+	owned := f.owned[id]
+	if owned == nil {
+		owned = &ownedRuns{done: make(chan struct{})}
+		f.owned[id] = owned
+	}
+	owned.count++
+	f.runs.Add(1)
+}
+
+func (f *Feature) runSession(s *session, insecure bool) {
+	defer f.runs.Done()
+	defer func() {
+		f.mu.Lock()
+		owned := f.owned[s.id]
+		owned.count--
+		if owned.count == 0 {
+			delete(f.owned, s.id)
+			close(owned.done)
+		}
+		f.mu.Unlock()
+	}()
+	s.run(insecure)
 }
 
 // ask is a DLNA video waiting on the screen's answer.
@@ -316,6 +360,7 @@ func (f *Feature) begin(id uint64, req Request) {
 	}
 	s := newSession(id, req, uu, f.scr, f.panelW, f.panelH)
 	s.ended, s.changed = f.sessionEnded, func() { f.Changed.Emit(struct{}{}) }
+	f.addRunLocked(id)
 	// Whatever covered the last video is told again for this one by the next frame.
 	f.cur, f.ask, f.heldByUs, f.covered = s, nil, false, false
 	f.lastID = id
@@ -327,11 +372,7 @@ func (f *Feature) begin(id uint64, req Request) {
 	s.audioLease = media.Get().ReserveReceived()
 	slog.Info("video: starting", "id", id, "url", Redacted(uu), "origin", req.Origin, "from", req.From)
 	f.Changed.Emit(struct{}{})
-	f.runs.Add(1)
-	safe.Go("video", func() {
-		defer f.runs.Done()
-		s.run(insecure)
-	})
+	safe.Go("video", func() { f.runSession(s, insecure) })
 }
 
 // sessionEnded is a session over, by itself, by failing, or stopped.
@@ -445,6 +486,42 @@ func (f *Feature) StopID(id uint64) {
 	}
 }
 
+// StopIDDone stops only the matching video or question and reports when all decoder
+// generations owned by id have finished session.run, including their end callbacks.
+// An old ID still waits for its retired runs, but cannot stop a newer video.
+// Zero, unknown and fully retired IDs return an already closed channel.
+func (f *Feature) StopIDDone(id uint64) <-chan struct{} {
+	if id == 0 {
+		return stoppedDone
+	}
+	f.controls.Lock()
+	defer f.controls.Unlock()
+	f.mu.Lock()
+	done := stoppedDone
+	if owned := f.owned[id]; owned != nil {
+		done = owned.done
+	}
+	var s *session
+	if f.cur != nil && f.cur.id == id {
+		s = f.cur
+		s.cancel()
+		f.cur, f.heldByUs = nil, false
+	}
+	asked := f.ask != nil && f.ask.id == id
+	if asked {
+		f.ask = nil
+	}
+	f.mu.Unlock()
+	if s != nil {
+		slog.Info("video: stopped", "id", s.id)
+		s.stop(true)
+	}
+	if s != nil || asked {
+		f.Changed.Emit(struct{}{})
+	}
+	return done
+}
+
 // Seek moves the current VOD to an absolute position without changing its public identity.
 func (f *Feature) Seek(at time.Duration) error { return f.seek(0, at, false) }
 
@@ -549,14 +626,11 @@ func (f *Feature) seek(id uint64, at time.Duration, relative bool) error {
 	f.cur = s
 	old.cancel()
 	insecure := config.Get().Diag.InsecureTLS
-	f.runs.Add(1)
+	f.addRunLocked(s.id)
 	f.mu.Unlock()
 	s.audioLease = old.stopForSeek()
 	f.Changed.Emit(struct{}{})
-	safe.Go("video seek", func() {
-		defer f.runs.Done()
-		s.run(insecure)
-	})
+	safe.Go("video seek", func() { f.runSession(s, insecure) })
 	return nil
 }
 
@@ -735,17 +809,18 @@ func ownHost(host string) bool {
 
 // The package's own calls, which the DLNA renderer and the setup page use on every device.
 
-func Play(req Request) (uint64, error) { return Get().Play(req) }
-func Stop()                            { Get().Stop() }
-func StopID(id uint64)                 { Get().StopID(id) }
-func Seek(at time.Duration) error      { return Get().Seek(at) }
-func SeekBy(by time.Duration) error    { return Get().SeekBy(by) }
-func Pause()                           { Get().Pause() }
-func Resume()                          { Get().Resume() }
-func Current() State                   { return Get().State() }
-func SetOn(on bool)                    { Get().SetOn(on) }
-func SetDLNA(on bool)                  { Get().SetDLNA(on) }
-func Listen(fn func())                 { Get().Changed.Listen(func(struct{}) { fn() }) }
+func Play(req Request) (uint64, error)     { return Get().Play(req) }
+func Stop()                                { Get().Stop() }
+func StopID(id uint64)                     { Get().StopID(id) }
+func StopIDDone(id uint64) <-chan struct{} { return Get().StopIDDone(id) }
+func Seek(at time.Duration) error          { return Get().Seek(at) }
+func SeekBy(by time.Duration) error        { return Get().SeekBy(by) }
+func Pause()                               { Get().Pause() }
+func Resume()                              { Get().Resume() }
+func Current() State                       { return Get().State() }
+func SetOn(on bool)                        { Get().SetOn(on) }
+func SetDLNA(on bool)                      { Get().SetDLNA(on) }
+func Listen(fn func())                     { Get().Changed.Listen(func(struct{}) { fn() }) }
 
 // DLNAOn is whether the DLNA renderer takes videos now.
 func DLNAOn() bool {

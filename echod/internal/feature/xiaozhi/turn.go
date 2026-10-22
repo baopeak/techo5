@@ -29,6 +29,13 @@ import (
 	"github.com/HuskerMinion/techo5/echod/internal/lib/safe"
 )
 
+var cancellationGeneration atomic.Uint64
+
+// CancellationGeneration changes at explicit stop/abort boundaries, not normal
+// speech endpoints or completed replies. Deferred device actions can retire
+// themselves without subscribing to callbacks under the voice owner's locks.
+func CancellationGeneration() uint64 { return cancellationGeneration.Load() }
+
 var (
 	// autoHush is how long a turn the server ends may hear nothing but the room before this
 	// device closes the listen itself, which also prompts the server to finish the utterance.
@@ -223,6 +230,7 @@ func (f *Feature) open(mode string, skip, limit time.Duration, followUp bool) er
 // Why it was asked for is not recorded here. The caller knows — a terminal, an abort, a session
 // going away — and the log line the caller writes is where that belongs.
 func (f *Feature) Stop() {
+	cancellationGeneration.Add(1)
 	f.mu.Lock()
 	t, down := f.turn, f.down
 	if t != nil {

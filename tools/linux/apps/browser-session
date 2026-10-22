@@ -3,10 +3,10 @@
 set -eu
 case "${1:-}" in web|youtube) ;; *) exit 64;; esac
 [ "$#" -eq 1 ] || exit 64
-R=/data/techo5-apps/runtime
-[ -x "$R/usr/bin/firefox-esr" ] && [ -x "$R/usr/bin/python3" ] || exit 69
+R=/data/techo5-apps/netflix-trial/rootfs
+[ -x "$R/usr/bin/chromium" ] && [ -x "$R/usr/bin/python3" ] || exit 69
 umask 077
-mkdir -p /data/techo5-apps/logs "$R/dev" "$R/proc" "$R/sys" "$R/tmp" "$R/run" "$R/dev/input" "$R/dev/shm"
+mkdir -p /data/techo5-apps/netflix-trial/logs "$R/dev" "$R/proc" "$R/sys" "$R/tmp" "$R/run" "$R/dev/input" "$R/dev/shm"
 chmod 1777 "$R/tmp"
 # Read-only firmware is not modified. These transient mounts vanish at reboot.
 if ! mountpoint -q "$R/dev"; then mount -t tmpfs -o mode=755 tmpfs "$R/dev"; fi
@@ -27,5 +27,5 @@ mkdir -p "$R/run/udev/data"
 printf 'E:ID_INPUT=1\nE:ID_INPUT_TOUCHSCREEN=1\n' > "$R/run/udev/data/c13:66"
 cp /etc/resolv.conf "$R/etc/resolv.conf"
 chmod 644 "$R/etc/resolv.conf"
-exec 2>>/data/techo5-apps/logs/session.log
-exec chroot "$R" /usr/bin/python3 /usr/local/share/techo5-apps/session.py "$1"
+exec 2>>/data/techo5-apps/netflix-trial/logs/session.log
+exec chroot "$R" /usr/bin/env TECHO5_TRIAL_BROWSER=chromium /usr/bin/python3 /usr/local/share/techo5-apps/session.py "$1"
