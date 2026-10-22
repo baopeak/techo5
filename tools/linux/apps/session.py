@@ -353,8 +353,11 @@ def main():
 
     area = wait_ready(keyboard_ready, watched, 'keyboard dock reservation', 10)
     url = initial_url
+    # Cleanup stops Xorg alongside Chromium, so every close looks like a crash;
+    # hide the resulting "Restore pages?" bubble that would cover each new page.
     browser_args = (['/usr/bin/chromium', '--disable-gpu', '--no-first-run',
-                     '--no-default-browser-check', '--user-data-dir=' + str(HOME / 'chromium-profile'),
+                     '--no-default-browser-check', '--hide-crash-restore-bubble',
+                     '--user-data-dir=' + str(HOME / 'chromium-profile'),
                      url] if ENGINE == 'chromium' else
                     ['/usr/bin/firefox-esr', '--no-remote', '--profile', str(HOME / 'profile'), url])
     firefox = start(browser_args, user=True, env=env)
