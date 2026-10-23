@@ -376,6 +376,32 @@ func TestAPausedTrackWaitsForItsSender(t *testing.T) {
 	}
 }
 
+// A track marked WaitOutQuiet (the local browser's) reads on after a quiet instead of ending, and keeps
+// its source: closing it would end the browser session that writes to it.
+func TestATrackThatWaitsOutQuietReadsOn(t *testing.T) {
+	const name = "Local browser (stalled)"
+	WaitOutQuiet(name)
+	s := NewStream(speaker.NewDriver(speaker.New()), speaker.New(), func() {}, func(string) {})
+	src := newQuietSrc()
+	s.PlayPCM(name, src, speaker.Rate, 2)
+	<-src.reads             // the first read, waiting
+	src.quiet <- struct{}{} // nothing arrives for the whole of it
+	select {
+	case <-src.reads:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the track did not read on after the quiet")
+	}
+	if s.Receiving() != name {
+		t.Error("the track ended on the quiet")
+	}
+	select {
+	case <-src.closed:
+		t.Error("the source was let go of on the quiet")
+	default:
+	}
+	s.Stop()
+}
+
 // quietSrc is a received track's source whose reads wait until the test says the sender was quiet for
 // the whole of one, or the source is closed.
 type quietSrc struct {

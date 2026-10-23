@@ -29,6 +29,13 @@ import (
 	"github.com/HuskerMinion/techo5/echod/internal/lib/safe"
 )
 
+var cancellationGeneration atomic.Uint64
+
+// CancellationGeneration changes at explicit stop/abort boundaries, not normal
+// speech endpoints or completed replies. Deferred device actions can retire
+// themselves without subscribing to callbacks under the voice owner's locks.
+func CancellationGeneration() uint64 { return cancellationGeneration.Load() }
+
 var (
 	// autoHush is how long a turn the server ends may hear nothing but the room before this
 	// device closes the listen itself, which also prompts the server to finish the utterance.
@@ -80,6 +87,10 @@ type turn struct {
 
 	// followUp marks a turn no wake word opened, which a wake word replaces rather than joins.
 	followUp bool
+
+	// dictation marks a turn whose transcript is typed rather than answered. It shows no voice
+	// screen, so an open browser keeps the display while somebody dictates into its keyboard.
+	dictation bool
 
 	// serverDone is the server having ended the utterance itself, so the listen is already closed
 	// there and a stop from here would read as another one.
@@ -141,15 +152,22 @@ func (f *Feature) listen(mode string, skip, limit time.Duration) error {
 }
 
 func (f *Feature) open(mode string, skip, limit time.Duration, followUp bool) error {
+	_, err := f.openTurn(mode, skip, limit, followUp, nil)
+	return err
+}
+
+// openTurn is open for a dictation too: a non-nil heard receives the transcript in place of an
+// answer, and installing it quiets replies until somebody next asks Xiaozhi something.
+func (f *Feature) openTurn(mode string, skip, limit time.Duration, followUp bool, heard chan string) (*turn, error) {
 	f.mu.Lock()
 	sess, live := f.sess, f.turn
 	f.mu.Unlock()
 
 	if sess == nil {
-		return fmt.Errorf("no xiaozhi session: it is %s", f.Status().State)
+		return nil, fmt.Errorf("no xiaozhi session: it is %s", f.Status().State)
 	}
 	if live != nil {
-		return errors.New("a turn is already open on this session; stop it before starting another")
+		return nil, errors.New("a turn is already open on this session; stop it before starting another")
 	}
 
 	// The other backend is asked to let go before the microphone is opened rather than after, so
@@ -160,12 +178,12 @@ func (f *Feature) open(mode string, skip, limit time.Duration, followUp bool) er
 
 	up, err := newUplink(sess)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Sent before the first packet rather than with it, so a terminal that hears the turn open and
 	// the turn end gets the same count the log will say.
 	if err := sess.Listen(ListenStart, mode); err != nil {
-		return err
+		return nil, err
 	}
 
 	st := sess.Stats()
@@ -175,7 +193,7 @@ func (f *Feature) open(mode string, skip, limit time.Duration, followUp bool) er
 		mode: mode, manual: mode != ListenAuto,
 		sent: st.Sent, bytes: st.SentBytes,
 		at: time.Now(), cancel: cancel, ended: make(chan struct{}),
-		skip: skip, limit: limit, followUp: followUp,
+		skip: skip, limit: limit, followUp: followUp, dictation: heard != nil,
 	}
 
 	f.mu.Lock()
@@ -184,18 +202,23 @@ func (f *Feature) open(mode string, skip, limit time.Duration, followUp bool) er
 	if f.sess != sess {
 		f.mu.Unlock()
 		cancel()
-		return errors.New("the session ended as the turn was opening")
+		return nil, errors.New("the session ended as the turn was opening")
 	}
-	if !followUp {
+	if !followUp && !t.dictation {
 		f.conversationEnded.Store(false)
 	}
 	f.turn = t
+	f.quiet, f.dictation = t.dictation, heard
 	f.response = responseWait{turn: t.id}
+	if t.dictation {
+		// No answer is wanted, so there is nothing for the response watchdog to wait on.
+		f.response = responseWait{}
+	}
 	f.mu.Unlock()
 
 	c := config.Get().Xiaozhi
 	slog.Info("xiaozhi: listening",
-		"turn", t.id, "mode", mode, "frame_ms", c.Frame(),
+		"turn", t.id, "mode", mode, "dictation", t.dictation, "frame_ms", c.Frame(),
 		"kbps", c.Bitrate/1000, "complexity", complexity(c.Complexity))
 	// The acknowledgement first and the status after it, because a terminal waiting for one reads
 	// the first line either of them produces. Answering the request is the reply; the sensor
@@ -204,7 +227,7 @@ func (f *Feature) open(mode string, skip, limit time.Duration, followUp bool) er
 	f.touch()
 
 	safe.Go("xiaozhi uplink", func() { f.stream(ctx, t) })
-	return nil
+	return t, nil
 }
 
 // Stop ends the turn that is open and silences whatever the device is saying, and returns once the
@@ -223,6 +246,14 @@ func (f *Feature) open(mode string, skip, limit time.Duration, followUp bool) er
 // Why it was asked for is not recorded here. The caller knows — a terminal, an abort, a session
 // going away — and the log line the caller writes is where that belongs.
 func (f *Feature) Stop() {
+	cancellationGeneration.Add(1)
+	f.stop()
+}
+
+// stop is Stop without marking an explicit cancellation. A session the cloud
+// dropped (it closes idle ones about once a minute) is the transport ending,
+// not somebody asking to retire screen actions queued by the last answer.
+func (f *Feature) stop() {
 	f.mu.Lock()
 	t, down := f.turn, f.down
 	if t != nil {
@@ -331,7 +362,7 @@ func (f *Feature) stream(ctx context.Context, t *turn) {
 	if t.skip > 0 {
 		gate = newWakeGate(t.skip)
 	}
-	if gate == nil {
+	if gate == nil && !t.dictation {
 		startScreen()
 	}
 
@@ -437,7 +468,9 @@ func (f *Feature) stream(ctx context.Context, t *turn) {
 // The turn is cleared before anything is said about it, so a terminal that starts another one off
 // the event is not racing the bookkeeping for this one.
 func (f *Feature) closeTurn(t *turn, why string) {
-	finishScreen(why == "the speaker finished" || t.serverDone.Load())
+	if !t.dictation {
+		finishScreen(why == "the speaker finished" || t.serverDone.Load())
+	}
 	f.mu.Lock()
 	if f.turn == t {
 		if f.response.turn == t.id && why != "the speaker finished" && !t.serverDone.Load() {

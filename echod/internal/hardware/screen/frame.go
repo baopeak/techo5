@@ -123,6 +123,14 @@ func (d *Device) blendRow(row []byte, py int, over image.Rectangle) {
 	}
 }
 
+// InvalidateFrames forces every page to repaint after an external owner exits.
+// Call on the presentation goroutine, with no concurrent Present calls.
+func (d *Device) InvalidateFrames() {
+	for page := range max(d.pages, 1) {
+		d.markStale(page)
+	}
+}
+
 // markStale says page next holds something other than its shadow.
 func (d *Device) markStale(next int) {
 	if len(d.stale) < d.pages {

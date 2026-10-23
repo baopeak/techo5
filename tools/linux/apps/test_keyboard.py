@@ -1,0 +1,119 @@
+"""Pure model checks: python3 -m unittest discover -s tools/linux/apps -p test_keyboard.py.
+
+No GTK/display required. Deployment owner runs these; they do not test hardware.
+"""
+
+import os
+import tempfile
+import unittest
+import unicodedata
+from unittest import mock
+
+from keyboard import add_dictation, apply_tone, delete_grapheme, load_quality, save_quality
+
+
+class DictationTests(unittest.TestCase):
+    def test_transcript_becomes_a_query(self):
+        self.assertEqual(add_dictation("", " Phở  Hà Nội. "), "Phở Hà Nội")
+        self.assertEqual(add_dictation("", "weather in Hanoi"), "weather in Hanoi")
+
+    def test_appends_after_typed_text_with_one_space(self):
+        self.assertEqual(add_dictation("tìm", "quán cà phê"), "tìm quán cà phê")
+        self.assertEqual(add_dictation("tìm ", "quán cà phê"), "tìm quán cà phê")
+
+    def test_keeps_an_ellipsis_and_ignores_empty_words(self):
+        self.assertEqual(add_dictation("", "chờ chút..."), "chờ chút...")
+        self.assertEqual(add_dictation("abc", " . "), "abc")
+
+    def test_recognizer_noise_phrases_count_as_nothing(self):
+        for noise in ("Cảm ơn các bạn đã theo dõi và hẹn gặp lại",
+                      "Hãy subscribe cho kênh La La School Để không bỏ lỡ những video hấp dẫn",
+                      "Thanks for watching!"):
+            with self.subTest(noise=noise):
+                self.assertEqual(add_dictation("tìm", noise), "tìm")
+        self.assertEqual(add_dictation("", "cảm ơn"), "cảm ơn")
+
+    def test_result_is_nfc(self):
+        self.assertTrue(unicodedata.is_normalized("NFC", add_dictation("", "Việt")))
+
+
+class ToneTests(unittest.TestCase):
+    def test_all_tones_preserve_vowel_shape(self):
+        for mark, expected in (("\u0301", "ắ"), ("\u0300", "ằ"),
+                               ("\u0309", "ẳ"), ("\u0303", "ẵ"), ("\u0323", "ặ")):
+            with self.subTest(mark=mark):
+                self.assertEqual(apply_tone("ă", mark), expected)
+
+    def test_replace_and_remove_tone_without_removing_shape(self):
+        self.assertEqual(apply_tone("tiếng", "\u0300"), "tiềng")
+        self.assertEqual(apply_tone("tiếng", ""), "tiêng")
+        self.assertEqual(apply_tone("ƯỚC", "\u0309"), "ƯỞC")
+
+    def test_explicit_multivowel_composition(self):
+        text = apply_tone("tiê", "\u0301") + "ng Việt"
+        self.assertEqual(text, "tiếng Việt")
+        self.assertEqual(apply_tone("ho", "\u0300") + "a", "hòa")
+
+    def test_word_boundary_does_not_rewrite_earlier_word(self):
+        for text in ("xin ", "xin.", "xin ch", "https://", "đ"):
+            with self.subTest(text=text):
+                self.assertEqual(apply_tone(text, "\u0301"), text)
+
+    def test_combining_input_normalizes_to_nfc(self):
+        result = apply_tone("a\u0306\u0300", "\u0301")
+        self.assertEqual(result, "ắ")
+        self.assertTrue(unicodedata.is_normalized("NFC", result))
+
+    def test_invalid_tone_rejected(self):
+        with self.assertRaises(ValueError):
+            apply_tone("a", "; command")
+
+
+class GraphemeTests(unittest.TestCase):
+    def test_vietnamese_nfc_and_nfd(self):
+        self.assertEqual(delete_grapheme("Việt"), "Việ")
+        self.assertEqual(delete_grapheme("xắ"), "x")
+        self.assertEqual(delete_grapheme("xa\u0306\u0301"), "x")
+        self.assertEqual(delete_grapheme("xA\u0302\u0323"), "x")
+
+    def test_empty_and_ascii(self):
+        self.assertEqual(delete_grapheme(""), "")
+        self.assertEqual(delete_grapheme("a"), "")
+        self.assertEqual(delete_grapheme("ab "), "ab")
+
+    def test_common_emoji_clusters(self):
+        self.assertEqual(delete_grapheme("x\U0001f44d\U0001f3fd"), "x")
+        self.assertEqual(delete_grapheme("x\U0001f469\u200d\U0001f4bb"), "x")
+        self.assertEqual(delete_grapheme("x\U0001f1fb\U0001f1f3"), "x")
+        self.assertEqual(delete_grapheme("\U0001f1fb\U0001f1f3\U0001f1fa\U0001f1f8"),
+                         "\U0001f1fb\U0001f1f3")
+
+
+class QualityPreferenceTests(unittest.TestCase):
+    def test_default_and_round_trip(self):
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            self.assertEqual(load_quality(), 720)
+            save_quality(480)
+            self.assertEqual(load_quality(), 480)
+            save_quality(360)
+            self.assertEqual(load_quality(), 360)
+
+    def test_corrupt_or_unsupported_value_uses_default(self):
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            save_quality(360)
+            path = os.path.join(home, ".config", "techo5", "video-quality")
+            for text in ("1080", "garbage", ""):
+                with self.subTest(text=text):
+                    with open(path, "w") as handle:
+                        handle.write(text)
+                    self.assertEqual(load_quality(), 720)
+
+    def test_unwritable_home_is_not_fatal(self):
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            open(os.path.join(home, ".config"), "w").close()  # a file blocks the directory
+            save_quality(360)
+            self.assertEqual(load_quality(), 720)
+
+
+if __name__ == "__main__":
+    unittest.main()

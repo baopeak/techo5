@@ -8,13 +8,13 @@ import (
 	"syscall"
 )
 
-// The crown Android-derived kernel requires supplementary group inet (3003)
-// for network sockets. Keep that group, but drop root and all root capabilities.
+// Keep crown's network group and the narrow app-control socket group,
+// but drop root and all root capabilities.
 func dropNetworkUser() error {
 	if os.Geteuid() != 0 {
 		return errors.New("privilege drop must begin in the root supervisor")
 	}
-	if err := syscall.Setgroups([]int{3003}); err != nil {
+	if err := syscall.Setgroups([]int{3003, 65532}); err != nil {
 		return err
 	}
 	if err := syscall.Setgid(65534); err != nil {

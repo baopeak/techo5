@@ -97,6 +97,14 @@ func (d *Display) videoGesture(g touch.Gesture) {
 		go video.Get().Stop()
 	case touch.SwipeUp:
 		d.showVideoControls()
+	case touch.SwipeLeft, touch.SwipeRight:
+		st := video.Get().State()
+		by := -10 * time.Second
+		if g.Kind == touch.SwipeRight {
+			by = 10 * time.Second
+		}
+		video.Get().SkipIDAsync(st.ID, by)
+		d.showVideoControls()
 	case touch.Tap:
 		d.mu.Lock()
 		shown := time.Now().Before(d.videoUntil)
@@ -107,7 +115,7 @@ func (d *Display) videoGesture(g touch.Gesture) {
 			d.showVideoControls()
 			return
 		}
-		switch d.r.videoTapped(image.Pt(g.X, g.Y)) {
+		switch tapped := d.r.videoTapped(image.Pt(g.X, g.Y)); tapped {
 		case videoTapPlay:
 			go video.Get().Toggle()
 			d.showVideoControls()
@@ -119,6 +127,17 @@ func (d *Display) videoGesture(g touch.Gesture) {
 			d.showVideoControls()
 		case videoTapLouder:
 			go media.Get().Adjust(+1)
+			d.showVideoControls()
+		case videoTapBackward, videoTapForward:
+			by := -10 * time.Second
+			if tapped == videoTapForward {
+				by = 10 * time.Second
+			}
+			video.Get().SkipIDAsync(st.ID, by)
+			d.showVideoControls()
+		case videoTapTimeline:
+			at := d.r.videoSeekPosition(g.X, st.Dur)
+			video.Get().SeekIDAsync(st.ID, at)
 			d.showVideoControls()
 		default:
 			// Off the controls: they go, and the picture is the whole screen again.

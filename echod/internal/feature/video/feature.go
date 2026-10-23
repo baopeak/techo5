@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"strings"
 	"sync"
@@ -49,11 +50,16 @@ type Feature struct {
 	// a pause, its end, a question. Listeners must not block.
 	Changed hook.Hook[struct{}]
 
+	// controls serializes decoder replacement with stop, pause and cover transitions.
+	// mu remains short-held so media callbacks can still read State during a handover.
+	controls sync.Mutex
+
 	mu       sync.Mutex
 	scr      Screen
 	panelW   int
 	panelH   int
 	seq      uint64
+	lastID   uint64
 	cur      *session
 	ask      *ask
 	notNow   map[string]time.Time
@@ -64,11 +70,65 @@ type Feature struct {
 	err      string
 	errAt    time.Time
 
+	seekQueue []seekCommand
+	seekHead  int
+	seeking   bool // one worker preserves the order in which gestures were received
+
+	// owned tracks run teardown by public ID, including retired seek generations.
+	// Entries disappear only after the last session.run has returned. Protected by mu.
+	owned map[uint64]*ownedRuns
+
 	// publish is a nudge to the goroutine that tells Home Assistant.
 	publish chan struct{}
 
-	// runs counts the sessions still running, stopped or not, for the tests to wait out.
+	// runs counts decoder sessions and the gesture worker still running, for tests to wait out.
 	runs sync.WaitGroup
+}
+
+type seekCommand struct {
+	id       uint64
+	at       time.Duration
+	relative bool
+}
+
+type ownedRuns struct {
+	count int
+	done  chan struct{}
+}
+
+var stoppedDone = func() <-chan struct{} {
+	done := make(chan struct{})
+	close(done)
+	return done
+}()
+
+// addRunLocked registers ownership before a session is visible to controllers.
+func (f *Feature) addRunLocked(id uint64) {
+	if f.owned == nil {
+		f.owned = make(map[uint64]*ownedRuns)
+	}
+	owned := f.owned[id]
+	if owned == nil {
+		owned = &ownedRuns{done: make(chan struct{})}
+		f.owned[id] = owned
+	}
+	owned.count++
+	f.runs.Add(1)
+}
+
+func (f *Feature) runSession(s *session, insecure bool) {
+	defer f.runs.Done()
+	defer func() {
+		f.mu.Lock()
+		owned := f.owned[s.id]
+		owned.count--
+		if owned.count == 0 {
+			delete(f.owned, s.id)
+			close(owned.done)
+		}
+		f.mu.Unlock()
+	}()
+	s.run(insecure)
 }
 
 // ask is a DLNA video waiting on the screen's answer.
@@ -234,6 +294,16 @@ func (f *Feature) Play(req Request) (uint64, error) {
 		return 0, errors.New("the device does not fetch from itself")
 	}
 	req.URL = u.String()
+	if req.AudioURL != "" {
+		audio, err := CheckURL(req.AudioURL)
+		if err != nil {
+			return 0, err
+		}
+		if ownHost(audio.Hostname()) {
+			return 0, errors.New("the device does not fetch from itself")
+		}
+		req.AudioURL = audio.String()
+	}
 	f.mu.Lock()
 	if f.panelW == 0 {
 		f.mu.Unlock()
@@ -270,6 +340,8 @@ func (f *Feature) Play(req Request) (uint64, error) {
 
 // begin starts session id, ending whatever was playing.
 func (f *Feature) begin(id uint64, req Request) {
+	f.controls.Lock()
+	defer f.controls.Unlock()
 	uu, err := CheckURL(req.URL)
 	if err != nil {
 		return
@@ -283,22 +355,24 @@ func (f *Feature) begin(id uint64, req Request) {
 		return
 	}
 	old := f.cur
+	if old != nil {
+		old.cancel()
+	}
 	s := newSession(id, req, uu, f.scr, f.panelW, f.panelH)
 	s.ended, s.changed = f.sessionEnded, func() { f.Changed.Emit(struct{}{}) }
+	f.addRunLocked(id)
 	// Whatever covered the last video is told again for this one by the next frame.
 	f.cur, f.ask, f.heldByUs, f.covered = s, nil, false, false
+	f.lastID = id
 	insecure := config.Get().Diag.InsecureTLS
 	f.mu.Unlock()
 	if old != nil {
 		old.stop(true)
 	}
+	s.audioLease = media.Get().ReserveReceived()
 	slog.Info("video: starting", "id", id, "url", Redacted(uu), "origin", req.Origin, "from", req.From)
 	f.Changed.Emit(struct{}{})
-	f.runs.Add(1)
-	safe.Go("video", func() {
-		defer f.runs.Done()
-		s.run(insecure)
-	})
+	safe.Go("video", func() { f.runSession(s, insecure) })
 }
 
 // sessionEnded is a session over, by itself, by failing, or stopped.
@@ -308,14 +382,14 @@ func (f *Feature) sessionEnded(s *session, err error, itself bool) {
 	if current {
 		f.cur, f.heldByUs = nil, false
 	}
-	if itself {
+	if current && itself {
 		f.ended = s.id
 	}
-	if err != nil {
+	if current && err != nil {
 		f.failed, f.err, f.errAt = s.id, err.Error(), time.Now()
 	}
 	f.mu.Unlock()
-	if err != nil {
+	if current && err != nil {
 		// What the screen says too: a video that fails once it has started fails here, not as the
 		// action's answer, which was given when it started.
 		f.lastErr.Set(clip(err.Error(), 250))
@@ -381,9 +455,20 @@ func (f *Feature) Asking() (id uint64, from, title string, ok bool) {
 }
 
 // Stop ends the video, and any question about one.
-func (f *Feature) Stop() {
+func (f *Feature) Stop() { f.stop(0) }
+
+func (f *Feature) stop(id uint64) {
+	f.controls.Lock()
+	defer f.controls.Unlock()
 	f.mu.Lock()
 	s := f.cur
+	if id != 0 && (s == nil || s.id != id) && (f.ask == nil || f.ask.id != id) {
+		f.mu.Unlock()
+		return
+	}
+	if s != nil {
+		s.cancel()
+	}
 	f.cur, f.ask, f.heldByUs = nil, nil, false
 	f.mu.Unlock()
 	if s != nil {
@@ -396,13 +481,157 @@ func (f *Feature) Stop() {
 // StopID ends video id if it is still the one up: a controller stopping its own video does not stop the
 // next one somebody else started.
 func (f *Feature) StopID(id uint64) {
-	f.mu.Lock()
-	cur := f.cur != nil && f.cur.id == id
-	asking := f.ask != nil && f.ask.id == id
-	f.mu.Unlock()
-	if cur || asking {
-		f.Stop()
+	if id != 0 {
+		f.stop(id)
 	}
+}
+
+// StopIDDone stops only the matching video or question and reports when all decoder
+// generations owned by id have finished session.run, including their end callbacks.
+// An old ID still waits for its retired runs, but cannot stop a newer video.
+// Zero, unknown and fully retired IDs return an already closed channel.
+func (f *Feature) StopIDDone(id uint64) <-chan struct{} {
+	if id == 0 {
+		return stoppedDone
+	}
+	f.controls.Lock()
+	defer f.controls.Unlock()
+	f.mu.Lock()
+	done := stoppedDone
+	if owned := f.owned[id]; owned != nil {
+		done = owned.done
+	}
+	var s *session
+	if f.cur != nil && f.cur.id == id {
+		s = f.cur
+		s.cancel()
+		f.cur, f.heldByUs = nil, false
+	}
+	asked := f.ask != nil && f.ask.id == id
+	if asked {
+		f.ask = nil
+	}
+	f.mu.Unlock()
+	if s != nil {
+		slog.Info("video: stopped", "id", s.id)
+		s.stop(true)
+	}
+	if s != nil || asked {
+		f.Changed.Emit(struct{}{})
+	}
+	return done
+}
+
+// Seek moves the current VOD to an absolute position without changing its public identity.
+func (f *Feature) Seek(at time.Duration) error { return f.seek(0, at, false) }
+
+// SeekBy moves the current VOD relative to its position, including a pending seek target.
+func (f *Feature) SeekBy(by time.Duration) error { return f.seek(0, by, true) }
+
+// SeekID seeks the current VOD to an absolute position, retaining its public identity. Unknown
+// durations (including live streams) are not seekable. A stale controller cannot seek a replacement.
+func (f *Feature) SeekID(id uint64, at time.Duration) error {
+	if id == 0 {
+		return ErrNoVideo
+	}
+	return f.seek(id, at, false)
+}
+
+// SkipID moves relative to the current position; repeated taps while loading use the pending target.
+func (f *Feature) SkipID(id uint64, by time.Duration) error {
+	if id == 0 {
+		return ErrNoVideo
+	}
+	return f.seek(id, by, true)
+}
+
+// SeekIDAsync queues an absolute gesture without blocking the input/frame loop.
+// Intents are ordered synchronously, not by whichever goroutine gets scheduled first.
+func (f *Feature) SeekIDAsync(id uint64, at time.Duration) { f.queueSeek(id, at, false) }
+
+// SkipIDAsync queues a relative gesture in the same order as timeline taps.
+func (f *Feature) SkipIDAsync(id uint64, by time.Duration) { f.queueSeek(id, by, true) }
+
+func (f *Feature) queueSeek(id uint64, at time.Duration, relative bool) {
+	if id == 0 {
+		return
+	}
+	f.mu.Lock()
+	f.seekQueue = append(f.seekQueue, seekCommand{id: id, at: at, relative: relative})
+	start := !f.seeking
+	if start {
+		f.seeking = true
+		f.runs.Add(1)
+	}
+	f.mu.Unlock()
+	if start {
+		safe.Go("video seek gestures", func() {
+			defer f.runs.Done()
+			for {
+				f.mu.Lock()
+				if f.seekHead == len(f.seekQueue) {
+					f.seekQueue = f.seekQueue[:0]
+					f.seekHead, f.seeking = 0, false
+					f.mu.Unlock()
+					return
+				}
+				command := f.seekQueue[f.seekHead]
+				f.seekHead++
+				f.mu.Unlock()
+				_ = f.seek(command.id, command.at, command.relative)
+			}
+		})
+	}
+}
+
+func seekTarget(at, duration time.Duration, fps float64) (time.Duration, error) {
+	if duration <= 0 {
+		return 0, ErrNotSeekable
+	}
+	// Leave a full source and output frame plus the probe's centisecond
+	// rounding margin; downsampling must not round the remaining output to zero.
+	rate := FrameRate(fps)
+	frame := time.Duration(math.Ceil(float64(time.Second) * float64(rate.Den) / float64(rate.Num)))
+	if fps > 0 && fps <= 240 {
+		frame = max(frame, time.Duration(math.Ceil(float64(time.Second)/fps)))
+	}
+	return min(max(at, 0), max(duration-frame-10*time.Millisecond, 0)), nil
+}
+
+func (f *Feature) seek(id uint64, at time.Duration, relative bool) error {
+	f.controls.Lock()
+	defer f.controls.Unlock()
+	f.mu.Lock()
+	old := f.cur
+	if old == nil || (id != 0 && old.id != id) {
+		f.mu.Unlock()
+		return ErrNoVideo
+	}
+	old.mu.Lock()
+	info, rate, audioValidated := old.info, old.rate, old.audioValidated
+	old.mu.Unlock()
+	if relative {
+		at += old.offset + old.clock()
+	}
+	target, err := seekTarget(at, info.Duration, info.FPS)
+	if err != nil {
+		f.mu.Unlock()
+		return err
+	}
+	s := newSession(old.id, old.req, old.u, old.screen, old.panelW, old.panelH)
+	s.offset, s.info, s.rate, s.wallPaused = target, info, rate, old.paused()
+	s.audioValidated = audioValidated
+	s.ended, s.changed = f.sessionEnded, func() { f.Changed.Emit(struct{}{}) }
+	// Install before stopping: teardown and late EOF from the old decoder are never a public end.
+	f.cur = s
+	old.cancel()
+	insecure := config.Get().Diag.InsecureTLS
+	f.addRunLocked(s.id)
+	f.mu.Unlock()
+	s.audioLease = old.stopForSeek()
+	f.Changed.Emit(struct{}{})
+	safe.Go("video seek", func() { f.runSession(s, insecure) })
+	return nil
 }
 
 // Pause and Resume hold the video where it is and carry it on; Toggle does whichever it is not doing.
@@ -418,6 +647,8 @@ func (f *Feature) Toggle() {
 }
 
 func (f *Feature) setPaused(on bool) {
+	f.controls.Lock()
+	defer f.controls.Unlock()
 	f.mu.Lock()
 	s := f.cur
 	f.heldByUs = false
@@ -430,6 +661,8 @@ func (f *Feature) setPaused(on bool) {
 // Covered is the display saying something is over the video (a call, a ring, a turn, a camera): the
 // video pauses under it, and carries on when it is gone if it was playing when it came.
 func (f *Feature) Covered(on bool) {
+	f.controls.Lock()
+	defer f.controls.Unlock()
 	f.mu.Lock()
 	if on == f.covered {
 		f.mu.Unlock()
@@ -462,7 +695,7 @@ func (f *Feature) Covered(on bool) {
 func (f *Feature) State() State {
 	f.mu.Lock()
 	s, a := f.cur, f.ask
-	st := State{Phase: Idle, Ended: f.ended, Failed: f.failed, Err: f.err, ErrAt: f.errAt}
+	st := State{Phase: Idle, LastID: f.lastID, Ended: f.ended, Failed: f.failed, Err: f.err, ErrAt: f.errAt}
 	if a != nil {
 		st.AskID = a.id
 	}
@@ -475,9 +708,10 @@ func (f *Feature) State() State {
 		s.mu.Lock()
 		st.Dur = s.info.Duration
 		s.mu.Unlock()
+		st.Pos = s.offset
 		st.Phase = Loading
 		if started {
-			st.Pos = s.clock()
+			st.Pos += s.clock()
 			st.Phase = Playing
 			if s.paused() {
 				st.Phase = Paused
@@ -540,6 +774,14 @@ func (f *Feature) Actions() []*esphome.Action {
 		{Name: "stop_video", Run: func(esphome.Call) (any, error) { f.Stop(); return nil, nil }},
 		{Name: "pause_video", Run: func(esphome.Call) (any, error) { f.Pause(); return nil, nil }},
 		{Name: "resume_video", Run: func(esphome.Call) (any, error) { f.Resume(); return nil, nil }},
+		{
+			// Encrypted ESPHome API: absolute seconds, not a delta. VOD only; clamped to its duration.
+			Name: "seek_video",
+			Args: []esphome.Arg{{Name: "seconds", Type: esphome.ArgInt}},
+			Run: func(c esphome.Call) (any, error) {
+				return nil, f.Seek(time.Duration(c.Int("seconds")) * time.Second)
+			},
+		},
 	}
 }
 
@@ -567,15 +809,18 @@ func ownHost(host string) bool {
 
 // The package's own calls, which the DLNA renderer and the setup page use on every device.
 
-func Play(req Request) (uint64, error) { return Get().Play(req) }
-func Stop()                            { Get().Stop() }
-func StopID(id uint64)                 { Get().StopID(id) }
-func Pause()                           { Get().Pause() }
-func Resume()                          { Get().Resume() }
-func Current() State                   { return Get().State() }
-func SetOn(on bool)                    { Get().SetOn(on) }
-func SetDLNA(on bool)                  { Get().SetDLNA(on) }
-func Listen(fn func())                 { Get().Changed.Listen(func(struct{}) { fn() }) }
+func Play(req Request) (uint64, error)     { return Get().Play(req) }
+func Stop()                                { Get().Stop() }
+func StopID(id uint64)                     { Get().StopID(id) }
+func StopIDDone(id uint64) <-chan struct{} { return Get().StopIDDone(id) }
+func Seek(at time.Duration) error          { return Get().Seek(at) }
+func SeekBy(by time.Duration) error        { return Get().SeekBy(by) }
+func Pause()                               { Get().Pause() }
+func Resume()                              { Get().Resume() }
+func Current() State                       { return Get().State() }
+func SetOn(on bool)                        { Get().SetOn(on) }
+func SetDLNA(on bool)                      { Get().SetDLNA(on) }
+func Listen(fn func())                     { Get().Changed.Listen(func(struct{}) { fn() }) }
 
 // DLNAOn is whether the DLNA renderer takes videos now.
 func DLNAOn() bool {

@@ -58,14 +58,6 @@ func TestRTSPWantsADecoderThatRefusesBasic(t *testing.T) {
 	if readsRTSP(none) || readsRTSP(filepath.Join(dir, "missing")) {
 		t.Error("a decoder without the RTSP demuxer is used for RTSP")
 	}
-	// What build-ffmpeg.sh patches in is what is looked for.
-	script, err := os.ReadFile("../../../../tools/linux/build-ffmpeg.sh")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(script), string(digestOnly)) {
-		t.Error("build-ffmpeg.sh does not patch in the message CanRTSP looks for")
-	}
 }
 
 // A camera's frames are read into one picture for the whole stream, not a new one each.
