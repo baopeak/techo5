@@ -40,6 +40,20 @@ func keepsWhileHeld(name string) bool {
 	return ok
 }
 
+// waitOutQuiet names the received tracks a quiet does not end (WaitOutQuiet).
+var waitOutQuiet sync.Map
+
+// WaitOutQuiet marks the received track named name as one that waits out a quiet, however long, rather
+// than ending: the local browser's (feature/display), whose sink sends silence all the time it is open.
+// Nothing arriving from it is the browser stalled under load, not a sender walking away, and ending
+// the track would close its pipe and the browser session with it.
+func WaitOutQuiet(name string) { waitOutQuiet.Store(name, true) }
+
+func waitsOutQuiet(name string) bool {
+	_, ok := waitOutQuiet.Load(name)
+	return ok
+}
+
 // offeredHook, when set, hears how each offer of received audio went; tests wait on it.
 var offeredHook atomic.Pointer[func(item string, ok bool)]
 
@@ -217,6 +231,7 @@ func (m *Stream) receive(ctx context.Context, t *track, src PCMSource, conv *toS
 	phone := strings.HasPrefix(t.item, BluetoothPrefix)
 	var on sendingOn
 	var again playingAgain
+	stalled := false
 	for {
 		// A phone is read on while the track is held up, and what it sends goes (offered): left unread,
 		// what a phone that plays again sends piles up in bluez-alsa until it overflows, and the track
@@ -269,6 +284,7 @@ func (m *Stream) receive(ctx context.Context, t *track, src PCMSource, conv *toS
 				m.offered(t, samples)
 			}
 			carry = append(carry[:0], in[whole:]...)
+			stalled = false
 		}
 		switch {
 		case err == nil:
@@ -277,6 +293,13 @@ func (m *Stream) receive(ctx context.Context, t *track, src PCMSource, conv *toS
 			// the track waits for it, paused, rather than ending, until its receiver says the sender has
 			// gone (ReceiverGone).
 			if paused, _ := m.pausedOn(t); receiverControl(t.item) != nil && paused {
+				continue
+			}
+			if waitsOutQuiet(t.item) {
+				if !stalled {
+					slog.Info("received audio stalled; waiting for it", "item", t.item)
+				}
+				stalled = true
 				continue
 			}
 			slog.Info("received audio went quiet", "item", t.item)

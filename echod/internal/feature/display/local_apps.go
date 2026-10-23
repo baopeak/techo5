@@ -29,6 +29,14 @@ const browserLauncher = "/data/techo5-apps/bin/browser-session"
 const appPoll = 50 * time.Millisecond
 const browserVideoLimit = 64 << 10
 
+// browserTrack is the name the browser's sound plays under.
+const browserTrack = "Local browser"
+
+// The private Pulse sink sends silence all the time the browser is open, so a pause in it is the
+// session stalled under load. Ending the track there closed the pipe, parec died on it, and the
+// whole browser session went with it.
+func init() { media.WaitOutQuiet(browserTrack) }
+
 type browserVideoRequest struct {
 	URL      string `json:"url"`
 	AudioURL string `json:"audio_url"`
@@ -477,7 +485,7 @@ func (a *localApps) step(priority bool, now time.Time, wake func()) (bool, bool)
 				request = "stop"
 			} else {
 				// The private Pulse sink emits PCM, never physical mic audio.
-				a.audioTrack = media.Get().PlayReceived("Local browser", a.audio, 48000, 2)
+				a.audioTrack = media.Get().PlayReceived(browserTrack, a.audio, 48000, 2)
 			}
 		default:
 		}
