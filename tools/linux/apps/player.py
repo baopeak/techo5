@@ -2,12 +2,16 @@
 """Extract a public YouTube URL locally and hand it to TECHO5's native player.
 
 Invoked by keyboard.py as `player.py [--max-height 360|480|720] URL` with one
-HTTPS YouTube URL. No cookies, downloads, shell, external rendering or X11
-video decoder. QuickJS/yt-dlp select H.264 up to the chosen height (720p by
-default, preferring <=30 fps) and AAC/Opus. The inherited fd3 carries one bounded native-video request;
+HTTPS YouTube URL. No downloads, shell, external rendering or X11 video
+decoder. When the browser profile is signed in, its own cookies are read (never
+copied out or logged), since YouTube asks anonymous extraction from a flagged
+address to sign in. yt-dlp, solving YouTube's JS challenge with Node when
+installed (QuickJS takes over a minute on crown), selects H.264 up to the chosen
+height (720p by default, preferring <=30 fps) and AAC/Opus. The inherited fd3 carries one bounded native-video request;
 stdout carries only a fixed status token, never signed media URLs.
 Exit 0 means handoff sent, 2 invalid URL, 3 extraction failure, 4 unavailable
-handoff. Extraction has a 75-second deadline; cancellation reaps its child.
+handoff, 5 YouTube asked to sign in. Extraction has a 120-second deadline (room
+for QuickJS); cancellation reaps its child.
 """
 
 import json
@@ -25,6 +29,16 @@ VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}\Z")
 # 30) measured smooth on crown; 1080p decodes too slowly for the panel's gain.
 QUALITIES = (360, 480, 720)
 DEFAULT_QUALITY = 720
+# The Chromium profile session.py starts the browser with.
+BROWSER_PROFILE = "/home/browser/chromium-profile"
+# Exit status for YouTube refusing extraction until someone signs in.
+SIGN_IN = 5
+
+
+def needs_sign_in(error):
+    """Whether YouTube refused as it does an address it takes for a bot, or a signed-out session."""
+    text = str(error)
+    return "Sign in to confirm" in text or "--cookies" in text
 
 
 def quality_from(value):
@@ -116,6 +130,18 @@ def select_formats(info, max_height=DEFAULT_QUALITY):
     return chosen["url"], audio["url"]
 
 
+def extractor_options(profile=BROWSER_PROFILE):
+    """yt-dlp options: quiet, no cache, Node before QuickJS, the browser's cookies if it has any."""
+    options = {"quiet": True, "no_warnings": True, "noplaylist": True,
+               "skip_download": True, "cachedir": False,
+               "socket_timeout": 15, "retries": 1, "extractor_retries": 1,
+               "js_runtimes": {"node": {}, "quickjs": {}}, "remote_components": set()}
+    if os.path.isfile(os.path.join(profile, "Default", "Cookies")):
+        # No keyring runs in the app root, so Chromium stores them with its basic key.
+        options["cookiesfrombrowser"] = ("chromium", profile, "BASICTEXT", None)
+    return options
+
+
 def extract(url, max_height=DEFAULT_QUALITY):
     import yt_dlp
 
@@ -127,10 +153,8 @@ def extract(url, max_height=DEFAULT_QUALITY):
         warning = debug
         error = debug
 
-    options = {"quiet": True, "no_warnings": True, "logger": QuietLogger(),
-               "noplaylist": True, "skip_download": True, "cachedir": False,
-               "socket_timeout": 15, "retries": 1, "extractor_retries": 1,
-               "js_runtimes": {"quickjs": {}}, "remote_components": set()}
+    options = extractor_options()
+    options["logger"] = QuietLogger()
     with yt_dlp.YoutubeDL(options) as downloader:
         info = downloader.extract_info(url, download=False)
     return select_formats(info, max_height)
@@ -158,8 +182,8 @@ def main(argv):
         try:
             sys.stdout.write(json.dumps(extract(url, max_height)))
             return 0
-        except Exception:
-            return 3
+        except Exception as error:
+            return SIGN_IN if needs_sign_in(error) else 3
     try:
         if os.environ.get("TECHO5_VIDEO_FD") != "3" or not stat.S_ISFIFO(os.fstat(3).st_mode):
             return 4
@@ -173,9 +197,11 @@ def main(argv):
                                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                  stderr=subprocess.DEVNULL)
         try:
-            data, unused = child.communicate(timeout=75)
+            data, unused = child.communicate(timeout=120)
         except subprocess.TimeoutExpired:
             return 3
+        if child.returncode == SIGN_IN:
+            return SIGN_IN
         if child.returncode != 0:
             return 3
         try:

@@ -2,10 +2,12 @@
 
 Run by deployment owner: python3 -m unittest discover -s tools/linux/apps.
 """
+import os
+import tempfile
 import unittest
 
-from player import (QUALITIES, next_quality, parse_args, quality_from, select_formats,
-                    validate_url)
+from player import (QUALITIES, extractor_options, needs_sign_in, next_quality, parse_args,
+                    quality_from, select_formats, validate_url)
 
 
 class UrlTests(unittest.TestCase):
@@ -101,6 +103,24 @@ class FormatTests(unittest.TestCase):
                         [{**self.video("v", 480), "url": "file:///tmp/v"}, self.audio("a")]):
             with self.subTest(formats=formats), self.assertRaises(ValueError):
                 select_formats({"formats": formats})
+
+
+class ExtractorTests(unittest.TestCase):
+    def test_signed_in_profile_lends_its_cookies(self):
+        with tempfile.TemporaryDirectory() as profile:
+            self.assertNotIn("cookiesfrombrowser", extractor_options(profile))
+            os.mkdir(os.path.join(profile, "Default"))
+            open(os.path.join(profile, "Default", "Cookies"), "wb").close()
+            self.assertEqual(extractor_options(profile)["cookiesfrombrowser"],
+                             ("chromium", profile, "BASICTEXT", None))
+
+    def test_node_is_tried_before_quickjs(self):
+        self.assertEqual(list(extractor_options("/nonexistent")["js_runtimes"]), ["node", "quickjs"])
+
+    def test_sign_in_refusal_is_told_apart(self):
+        self.assertTrue(needs_sign_in(Exception(
+            "ERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use --cookies-from-browser")))
+        self.assertFalse(needs_sign_in(ValueError("No compatible video")))
 
 
 if __name__ == "__main__":

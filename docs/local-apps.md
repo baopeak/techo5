@@ -13,6 +13,7 @@ With the separate application runtime installed, open **Settings → Connections
 - **Ẩn phím / Bàn phím** collapses/expands the keyboard while retaining navigation and video controls. Touch targets are at least 48 pixels.
 - **Cuộn lên / Cuộn xuống** scroll the page without needing a mouse wheel. Firefox is started with XInput2 touch support; use these explicit controls if one-finger dragging selects text instead of scrolling on this platform.
 - On a public YouTube watch page, press **Phát video** on the bottom toolbar, not Play inside the website. **Hủy mở video** cancels extraction. After extraction the browser closes and TECHO5's existing native full-screen video player takes over. Tap the picture for its controls; stopping the native video returns to the browser unless a higher-priority screen has taken over.
+- YouTube can refuse anonymous extraction from your internet address ("Sign in to confirm you're not a bot") while still playing in the browser, which runs YouTube's own checks. Sign in to YouTube once in the Echo's browser: **Phát video** then reads that browser profile's own cookies, on the Echo, for each extraction. When YouTube still asks, the keyboard says so. yt-dlp recommends a secondary Google account, since YouTube can flag accounts used this way.
 - **Đóng** exits the browser and returns to the native screen. Screen-off and higher-priority native activities also close the application session rather than sharing the framebuffer concurrently.
 
 ## What has actually been exercised
@@ -59,6 +60,8 @@ apk --root "$R" --initdb --keys-dir /etc/apk/keys \
   yt-dlp-core yt-dlp-ejs yt-dlp-ejs-rt-quickjs
 ```
 
+Signed in, YouTube serves web clients that need its JS challenge solved. QuickJS takes about 75 s for that on crown, Node 22 or newer about 12 s (a whole extraction about 17 s), so install Node 22+ in the runtime as `/usr/local/bin/node` when the distribution's package is older (the crown Chromium runtime uses the official `linux-arm64` build, checked against nodejs.org's `SHASUMS256.txt`). The extractor tries Node first and falls back to QuickJS.
+
 After signature-verified package installation, run the generated-cache commands inside the isolated root: `update-ca-certificates`, `gtk-query-immodules-3.0 --update-cache`, and `glib-compile-schemas /usr/share/glib-2.0/schemas`. Ensure `/etc/ssl/cert.pem` inside the runtime points to `certs/ca-certificates.crt`. Install Inter regular/bold fonts under the runtime's `/usr/share/fonts/` and run `fc-cache -f` there. Do not disable certificate verification.
 
 Create the runtime-only `browser` account with UID/GID **1000**, home `/home/browser`, and supplementary `inet` GID **3003**. The supervisor verifies ownership and prepares its private home/runtime directories. Copy the files above without changing browser profile data. Install the executable launcher **last**, after validating source hashes and dependencies. Do not start a second native daemon merely to try the browser: launch through the Settings controls so the native framebuffer/audio lease is held.
@@ -86,7 +89,7 @@ YouTube video is not rendered concurrently with Xorg. The extractor sends one ne
 
 The Firefox content sandbox remains enabled; no sandbox-disable flags or preferences are used. Nevertheless, Linux 4.9 and the absence of modern namespaces are a real security limitation. Firefox displays its OS-protection warning. This experimental setup is not a recommendation for banking, valuable account sessions or untrusted sensitive browsing. A chroot is not a complete security sandbox.
 
-Logs remain root-private at `/data/techo5-apps/logs/session.log`. Video diagnostics keep only URL origins: signed paths, query strings, userinfo and fragments are omitted. The extractor does not persist downloaded videos or account cookies. Firefox retains its ordinary local profile/history.
+Logs remain root-private at `/data/techo5-apps/logs/session.log`. Video diagnostics keep only URL origins: signed paths, query strings, userinfo and fragments are omitted. The extractor does not persist downloaded videos. It reads the browser profile's cookies in place, as the browser's own user, and never copies them out of the app root or logs them. Firefox retains its ordinary local profile/history.
 
 ## Update and rollback
 

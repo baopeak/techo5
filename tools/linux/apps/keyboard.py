@@ -687,9 +687,12 @@ def main():
                 self.play_button.set_sensitive(False)
                 self.video_status.set_text("Đang chuyển sang trình phát native của Echo…")
             elif self.player_stopping:
-                self.video_status.set_text("Đã hủy mở video. Tiếp tục dùng Firefox.")
+                self.video_status.set_text("Đã hủy mở video. Tiếp tục dùng trình duyệt.")
+            elif status == 5:
+                self.video_status.set_text("YouTube yêu cầu đăng nhập. Đăng nhập YouTube trong trình duyệt rồi "
+                                           "bấm Phát video lại.")
             else:
-                self.video_status.set_text("Không phát được video công khai tương thích. Firefox vẫn mở.")
+                self.video_status.set_text("Không lấy được video tương thích. Bạn vẫn xem tiếp trong trình duyệt.")
             self.player_stopping = False
             if not self.player_handoff:
                 self.browser_action([])
