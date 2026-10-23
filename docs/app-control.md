@@ -8,10 +8,13 @@ This optional fork feature connects Xiaozhi MCP tools to the **local Chromium br
 | --- | --- | --- |
 | `open_app` | `app`: `browser`, `youtube`, `netflix` | “Marvin, mở YouTube”; “Open Netflix” |
 | `search_on_screen` | `target`: `web`, `youtube`, `netflix`; `query`: 2–500 characters | “Tìm video du lịch Đà Lạt trên YouTube”; “Mở web tìm thời tiết Đà Lạt” |
+| `play_youtube` | `query`: the video's title, 2–500 characters | “Marvin, mở chuyện đêm muộn tập 14 trên YouTube” |
 | `close_app` | none | “Đóng trình duyệt, về đồng hồ” |
 | `app_status` | none | Check whether the requested app is queued, starting, open, closed or failed |
 
 These are natural-language examples for a tool-capable Xiaozhi model, not locally parsed wake-word commands. The model must discover and invoke the appropriate MCP tool. `open` confirms the local browser window is ready, not that a site loaded, an account signed in, a video started or an answer was verified.
+
+`play_youtube` opens the same YouTube results page, and the keyboard then plays the **first result** natively, as if Phát video had been pressed on it. On crown that takes about 25 s with the signed-in browser's cookies (see [local apps](local-apps.md)). Coming back from the video shows the results page without playing again. The first result is only as good as the title the model passes: the tool asks it to drop command words and fix recognition slips. Unchanged, "mà chuyến đêm muôn tập 14" found an unrelated drama, while "chuyện đêm muộn tập 14" found the episode. The daemon logs each request's action, app and query length, never the query.
 
 `search_on_screen` displays Google/YouTube/Netflix results. Existing `web_search` retrieves Exa excerpts for a spoken answer. Opening a search page does not use the Exa quota, but is not equivalent to reading/verifying its results. Anonymous Exa search remains rate limited.
 
@@ -41,7 +44,7 @@ Deploy only a verified crown ARMv7/CGO-disabled image through the existing inact
 
 ## Verification and limitations
 
-Verify the sidecar catalog includes all five tools (including `web_search`). Make an actual SDK `tools/call` and observe queued→starting→open, then close→closed and the clock. Exercise Vietnamese/English query encoding, unavailable runtime, superseding commands, mute/cancel during startup, and native video handoff/return. Test while speaking and with automatic follow-ups enabled.
+Verify the sidecar catalog includes all six tools (including `web_search`). Make an actual SDK `tools/call` and observe queued→starting→open, then close→closed and the clock. Exercise Vietnamese/English query encoding, unavailable runtime, superseding commands, mute/cancel during startup, and native video handoff/return. Test while speaking and with automatic follow-ups enabled.
 
 Recorded on a physical crown with `v1.3.5_app-tools.2` (sidecar 1.2.0) after a slot install and reboot:
 - `app_status` returned `ok`/`closed` right after boot.

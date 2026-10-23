@@ -24,7 +24,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const version = "1.2.0"
+const version = "1.3.0"
 
 var buildID = "local"
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -139,6 +139,7 @@ type state struct {
 	Successes           uint64 `json:"successful_searches"`
 	OpenAppCalls        uint64 `json:"open_app_calls"`
 	SearchOnScreenCalls uint64 `json:"search_on_screen_calls"`
+	PlayYouTubeCalls    uint64 `json:"play_youtube_calls"`
 	CloseAppCalls       uint64 `json:"close_app_calls"`
 	AppStatusCalls      uint64 `json:"app_status_calls"`
 	AppErrors           uint64 `json:"app_tool_errors"`

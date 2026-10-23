@@ -27,7 +27,7 @@ Their features and credits are retained below; the upstream release badge is not
 - **Experimental Netflix:** Chromium/Widevine played one authenticated 720p session on the
   physical Echo. Some titles/direct watch URLs still return E100; universal Netflix support,
   hardware acceleration and HD quality are not guaranteed. Sign in only on your own device.
-- **Xiaozhi MCP app tools:** `open_app`, `search_on_screen`, `close_app`, `app_status` join the
+- **Xiaozhi MCP app tools:** `open_app`, `search_on_screen`, `play_youtube`, `close_app`, `app_status` join the
   existing `web_search` sidecar. App requests queue while the assistant speaks and use a narrow
   local Unix bridge, not a cloud-controlled root shell. Screen search and AI answer retrieval
   are different operations. See [voice commands, security and verification](docs/app-control.md).
@@ -40,7 +40,7 @@ not upstream signed OTA releases. The `v1.3.5-xiaozhi-mcp.1` prerelease targets 
 **Echo Show 8 1st gen (2019, `crown`) already running TECHO5 Alpine Linux**.
 It supplies binaries and a launcher, not a ready-made rootfs or boot image; use the guide to
 package a custom rootfs. Do not use these artifacts on Android or `athena`.
-The app-tool sidecar source is **1.2.0**. Earlier prerelease assets are not automatically updated
+The app-tool sidecar source is **1.3.0**. Earlier prerelease assets are not automatically updated
 by these source changes; do not mix old daemon/browser scripts with the new readiness protocol.
 Cloud catalog discovery and direct SDK calls are separate from a spoken model invocation:
 **real voice-triggered app control must be verified with the selected cloud model**.

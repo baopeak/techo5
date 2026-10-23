@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -42,9 +43,10 @@ type appControlResponse struct {
 }
 
 type appIntent struct {
-	app string
-	url string
-	id  uint64
+	app  string
+	url  string
+	play bool // play the first YouTube result natively once the results page is up
+	id   uint64
 }
 
 func readAppControl(r io.Reader) (appControlRequest, error) {
@@ -69,12 +71,18 @@ func readAppControl(r io.Reader) (appControlRequest, error) {
 		if (req.App != "web" && req.App != "youtube" && req.App != "netflix") || n < 2 || n > 500 {
 			return req, errors.New("search requires web, youtube or netflix and 2..500 query characters")
 		}
+	case "play":
+		req.Query = strings.TrimSpace(req.Query)
+		n := utf8.RuneCountInString(req.Query)
+		if req.App != "youtube" || n < 2 || n > 500 {
+			return req, errors.New("play requires youtube and 2..500 query characters")
+		}
 	case "close", "status":
 		if req.App != "" || req.Query != "" {
 			return req, errors.New("close and status do not accept app or query")
 		}
 	default:
-		return req, errors.New("action must be open, search, close or status")
+		return req, errors.New("action must be open, search, play, close or status")
 	}
 	return req, nil
 }
@@ -92,9 +100,10 @@ func appIntentFor(req appControlRequest) appIntent {
 		}
 	case "youtube":
 		in.url = "https://www.youtube.com/"
-		if req.Action == "search" {
+		if req.Action == "search" || req.Action == "play" {
 			in.url += "results?search_query=" + url.QueryEscape(req.Query)
 		}
+		in.play = req.Action == "play"
 	case "netflix":
 		in.url = "https://www.netflix.com/browse"
 		if req.Action == "search" {
@@ -215,7 +224,7 @@ func (a *localApps) prepareControl(priority bool) {
 	}
 	in := a.intent
 	a.intent = nil
-	a.launchURL = in.url
+	a.launchURL, a.launchPlay = in.url, in.play
 	a.requested = "web"
 	if in.app == "youtube" {
 		a.requested = "youtube"
@@ -338,6 +347,11 @@ func (d *Display) runAppControl(ctx context.Context) (func(), error) {
 			// unlimited goroutines. The socket deadline bounds shutdown.
 			serveAppConnection(conn, appPeerAllowed(conn), func(req appControlRequest) appControlResponse {
 				response := d.apps.controlRequest(req)
+				if req.Action != "status" {
+					// What the model asked for, without the query: it is what was heard.
+					slog.Info("app control request", "action", req.Action, "app", req.App,
+						"query_chars", utf8.RuneCountInString(req.Query), "state", response.State)
+				}
 				d.wake()
 				return response
 			})

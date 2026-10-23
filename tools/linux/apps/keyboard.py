@@ -280,6 +280,10 @@ def main():
                 GLib.io_add_watch(self.dictation.fileno(), GLib.PRIORITY_DEFAULT,
                                   GLib.IOCondition.IN | GLib.IOCondition.HUP | GLib.IOCondition.ERR,
                                   self.on_dictation)
+            query = os.environ.get("TECHO5_PLAY_QUERY")
+            if query and native_youtube:
+                # Xiaozhi's play_youtube: its results page shows while the first result is fetched.
+                GLib.timeout_add_seconds(1, self.play_search, query)
 
         def button(self, text, callback, box):
             button = Gtk.Button(label=text)
@@ -602,23 +606,7 @@ def main():
                     self.play_button.set_sensitive(True)
                     self.video_status.set_text("Hãy mở video youtube.com/watch hoặc youtu.be trước.")
                     return
-                if self.expanded:
-                    self.toggle_keyboard()
-                try:
-                    self.player = subprocess.Popen(
-                        [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "player.py"),
-                         "--max-height", str(self.quality), url], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                        stderr=subprocess.DEVNULL, close_fds=True, pass_fds=(3,))
-                    os.set_blocking(self.player.stdout.fileno(), False)
-                except OSError:
-                    self.play_button.set_sensitive(True)
-                    self.video_status.set_text("Không khởi động được trình phát video.")
-                    return
-                self.player_stopping = False
-                self.player_handoff = False
-                self.stop_button.set_sensitive(True)
-                self.video_status.set_text("Đang lấy luồng YouTube… Hủy mở video để dừng.")
-                GLib.timeout_add(200, self.poll_player)
+                self.start_player([url], "Đang lấy luồng YouTube… Hủy mở video để dừng.")
 
             def request():
                 if not self.closed and token == self.video_request and self.reading_video:
@@ -646,6 +634,34 @@ def main():
                 (copy_address, None),
             ])
             GLib.timeout_add_seconds(6, timeout)
+
+        def play_search(self, query):
+            """Play the first YouTube result for query natively, as Phát video does for a page."""
+            if not self.closed and self.player is None and not self.reading_video:
+                self.start_player(["--search", query], "Đang mở video đầu tiên trong kết quả… Hủy mở video để dừng.")
+            return False
+
+        def start_player(self, target, status):
+            """Run player.py for target (a watch URL, or --search and its words) and follow it."""
+            if self.expanded:
+                self.toggle_keyboard()
+            try:
+                self.player = subprocess.Popen(
+                    [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "player.py"),
+                     "--max-height", str(self.quality)] + target, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, close_fds=True, pass_fds=(3,))
+                os.set_blocking(self.player.stdout.fileno(), False)
+            except OSError:
+                self.player = None
+                self.play_button.set_sensitive(True)
+                self.video_status.set_text("Không khởi động được trình phát video.")
+                return
+            self.player_stopping = False
+            self.player_handoff = False
+            self.play_button.set_sensitive(False)
+            self.stop_button.set_sensitive(True)
+            self.video_status.set_text(status)
+            GLib.timeout_add(200, self.poll_player)
 
         def cycle_quality(self):
             from player import next_quality

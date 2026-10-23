@@ -2,7 +2,8 @@
 """Extract a public YouTube URL locally and hand it to TECHO5's native player.
 
 Invoked by keyboard.py as `player.py [--max-height 360|480|720] URL` with one
-HTTPS YouTube URL. No downloads, shell, external rendering or X11 video
+HTTPS YouTube URL, or `... --search WORDS` to play the first YouTube result for a
+title Xiaozhi heard (play_youtube). No downloads, shell, external rendering or X11 video
 decoder. When the browser profile is signed in, its own cookies are read (never
 copied out or logged), since YouTube asks anonymous extraction from a flagged
 address to sign in. yt-dlp, solving YouTube's JS challenge with Node when
@@ -57,7 +58,9 @@ def next_quality(height):
 
 
 def parse_args(argv):
-    """Return (extracting, max_height, url) or None for a malformed command line."""
+    """Return (extracting, max_height, searching, target) or None for a malformed command line.
+
+    target is a watch URL, or with --search the words whose first YouTube result plays."""
     argv = list(argv)
     extracting = bool(argv and argv[0] == "--extract")
     if extracting:
@@ -68,9 +71,22 @@ def parse_args(argv):
             return None
         max_height = quality_from(argv[1])
         argv = argv[2:]
+    searching = bool(argv and argv[0] == "--search")
+    if searching:
+        argv = argv[1:]
     if len(argv) != 1 or argv[0].startswith("--"):
         return None
-    return extracting, max_height, argv[0]
+    return extracting, max_height, searching, argv[0]
+
+
+def validate_query(value):
+    """Return search words for yt-dlp's ytsearch: 2-500 printable characters."""
+    if not isinstance(value, str):
+        raise ValueError("Invalid search")
+    value = " ".join(value.split())
+    if not 2 <= len(value) <= 500 or not value.isprintable():
+        raise ValueError("Invalid search")
+    return value
 
 
 def validate_url(value):
@@ -157,6 +173,12 @@ def extract(url, max_height=DEFAULT_QUALITY):
     options["logger"] = QuietLogger()
     with yt_dlp.YoutubeDL(options) as downloader:
         info = downloader.extract_info(url, download=False)
+    if "entries" in info:
+        # A ytsearch1: search: its one entry is the first result, already extracted.
+        entries = [entry for entry in info["entries"] if entry]
+        if not entries:
+            raise ValueError("No search result")
+        info = entries[0]
     return select_formats(info, max_height)
 
 
@@ -164,9 +186,9 @@ def main(argv):
     parsed = parse_args(argv)
     if parsed is None:
         return 2
-    extracting, max_height, raw_url = parsed
+    extracting, max_height, searching, target = parsed
     try:
-        url = validate_url(raw_url)
+        url = "ytsearch1:" + validate_query(target) if searching else validate_url(target)
     except (ValueError, TypeError):
         return 2
 
@@ -192,8 +214,8 @@ def main(argv):
 
     child = None
     try:
-        child = subprocess.Popen([sys.executable, __file__, "--extract",
-                                  "--max-height", str(max_height), url],
+        child = subprocess.Popen([sys.executable, __file__, "--extract", "--max-height", str(max_height)]
+                                 + (["--search", target] if searching else [url]),
                                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                  stderr=subprocess.DEVNULL)
         try:

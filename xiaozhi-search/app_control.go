@@ -50,9 +50,12 @@ func validateAppRequest(in appControlRequest) (appControlRequest, error) {
 		if in.Query != "" {
 			return appControlRequest{}, errors.New("open does not accept a query")
 		}
-	case "search":
-		if in.App != "web" && in.App != "youtube" && in.App != "netflix" {
+	case "search", "play":
+		if in.Action == "search" && in.App != "web" && in.App != "youtube" && in.App != "netflix" {
 			return appControlRequest{}, errors.New("target must be web, youtube or netflix")
+		}
+		if in.Action == "play" && in.App != "youtube" {
+			return appControlRequest{}, errors.New("play is only for youtube")
 		}
 		if !utf8.ValidString(in.Query) {
 			return appControlRequest{}, errors.New("query must be valid UTF-8")
@@ -144,6 +147,10 @@ type searchOnScreenInput struct {
 	Query  string `json:"query"`
 }
 
+type playYouTubeInput struct {
+	Query string `json:"query"`
+}
+
 type emptyAppInput struct{}
 
 func addAppTools(server *mcp.Server, status *statusFile, client appControlClient) {
@@ -159,6 +166,8 @@ func addAppTools(server *mcp.Server, status *statusFile, client appControlClient
 				s.OpenAppCalls++
 			case "search_on_screen":
 				s.SearchOnScreenCalls++
+			case "play_youtube":
+				s.PlayYouTubeCalls++
 			case "close_app":
 				s.CloseAppCalls++
 			case "app_status":
@@ -186,11 +195,19 @@ func addAppTools(server *mcp.Server, status *statusFile, client appControlClient
 	})
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "search_on_screen",
-		Description: "Tìm kiếm trên màn hình Echo trong web, youtube hoặc netflix. Navigates the display, not web_search evidence. Queued/starting is not visible; use app_status. Query is 2–500 characters after trimming.",
+		Description: "Tìm kiếm trên màn hình Echo trong web, youtube hoặc netflix và chỉ hiện trang kết quả. To open or play a named YouTube video, use play_youtube instead. Navigates the display, not web_search evidence. Queued/starting is not visible; use app_status. Query is 2–500 characters after trimming.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"target":{"type":"string","enum":["web","youtube","netflix"]},"query":{"type":"string","minLength":2,"maxLength":500}},"required":["target","query"],"additionalProperties":false}`),
 		Annotations: mutating(),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in searchOnScreenInput) (*mcp.CallToolResult, appControlResponse, error) {
 		return call(ctx, "search_on_screen", appControlRequest{Action: "search", App: in.Target, Query: in.Query})
+	})
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "play_youtube",
+		Description: "Mở và phát một video YouTube trên màn hình Echo theo tên, ví dụ \"mở chuyện đêm muộn tập 14 trên YouTube\". Use this whenever the user asks to open, play or watch a particular video or episode. Pass only the video's title as YouTube would list it: drop command words such as \"mở\", \"phát\", \"trên YouTube\", and fix obvious speech-recognition slips (\"mà chuyến đêm muôn tập 14\" means query \"chuyện đêm muộn tập 14\"), since the first result is played. The Echo shows the YouTube results, then plays the first result full screen by itself in about 20–30 seconds; the first result may not be the exact episode. Queued/starting is not playing. Query is 2–500 characters after trimming.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","minLength":2,"maxLength":500}},"required":["query"],"additionalProperties":false}`),
+		Annotations: mutating(),
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in playYouTubeInput) (*mcp.CallToolResult, appControlResponse, error) {
+		return call(ctx, "play_youtube", appControlRequest{Action: "play", App: "youtube", Query: in.Query})
 	})
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "close_app",

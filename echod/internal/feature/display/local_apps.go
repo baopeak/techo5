@@ -131,6 +131,7 @@ type localApps struct {
 	nextRequest      uint64
 	voiceBusy        bool
 	launchURL        string
+	launchPlay       bool // the browser starting for launchURL plays its first YouTube result
 	activeURL        string
 	returnURL        string
 	generation       uint64
@@ -179,7 +180,7 @@ func (a *localApps) request(kind string) {
 	if kind == "stop" && a.control.State != "error" {
 		a.control.State = "starting"
 	}
-	a.launchURL = ""
+	a.launchURL, a.launchPlay = "", false
 	// A second start is deliberately ignored, never queued behind a running app.
 	if kind == "stop" || (!a.leased && a.requested == "" && a.pending == nil && a.nativeID == 0) {
 		a.requested = kind
@@ -237,7 +238,8 @@ func (a *localApps) nativeReturnAfter(st video.State, completed func(uint64) <-c
 	}
 	a.nativeID = 0
 	kind := a.returnKind
-	a.launchURL, a.returnURL = a.returnURL, ""
+	// Back from the video to its results page, which must not play the first result again.
+	a.launchURL, a.returnURL, a.launchPlay = a.returnURL, "", false
 	a.returnKind = ""
 	return kind
 }
@@ -247,7 +249,7 @@ func (a *localApps) nativeStarted(id uint64, err error) {
 		// A denied request or synchronous startup failure must return the
 		// browser, not retry the same native request in a playback loop.
 		a.requested, a.returnKind = a.returnKind, ""
-		a.launchURL, a.returnURL = a.returnURL, ""
+		a.launchURL, a.returnURL, a.launchPlay = a.returnURL, "", false
 		slog.Warn("browser native video unavailable")
 		return
 	}
@@ -316,6 +318,9 @@ func (a *localApps) step(priority bool, now time.Time, wake func()) (bool, bool)
 		cmd.Dir = "/"
 		if a.launchURL != "" {
 			cmd.Env = append(cmd.Env, "TECHO5_APP_URL="+a.launchURL)
+			if a.launchPlay {
+				cmd.Env = append(cmd.Env, "TECHO5_APP_PLAY=1")
+			}
 		}
 		cmd.Env = append(cmd.Env, "TECHO5_APP_READY_FD=4", "TECHO5_DICTATION_FD=5")
 		audio, output, err := os.Pipe()
@@ -375,7 +380,7 @@ func (a *localApps) step(priority bool, now time.Time, wake func()) (bool, bool)
 		go serveDictation(dictation, xiaozhi.Get().Dictate)
 		a.generation++
 		a.readReady(readyInput, wake)
-		a.activeURL, a.launchURL = a.launchURL, ""
+		a.activeURL, a.launchURL, a.launchPlay = a.launchURL, "", false
 		if a.control.State != "starting" || a.control.App == "" {
 			app := "browser"
 			if request == "youtube" {

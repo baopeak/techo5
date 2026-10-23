@@ -30,9 +30,9 @@ never publish it, put it in command history, or include it in screenshots, logs,
 release assets. The current client accepts only the official `api.xiaozhi.me` WSS MCP endpoint;
 see [`readEndpoint`](../xiaozhi-search/main.go), not the voice backend's host setting.
 
-## On-device screen tools (sidecar 1.2.0)
+## On-device screen tools (sidecar 1.3.0)
 
-All five tools use the **existing** private Xiaozhi WSS MCP connection. There is no second
+All six tools use the **existing** private Xiaozhi WSS MCP connection. There is no second
 cloud endpoint, TCP listener, arbitrary URL argument, or shell-command argument.
 
 | Tool | Arguments | Meaning |
@@ -40,6 +40,7 @@ cloud endpoint, TCP listener, arbitrary URL argument, or shell-command argument.
 | `web_search` | `query`, optional `max_results` (1–5) | Existing read-only Exa search, returning source excerpts and URLs. |
 | `open_app` | `app`: `browser`, `youtube`, or `netflix` | Request the named app on the Echo screen. |
 | `search_on_screen` | `target`: `web`, `youtube`, or `netflix`; `query` | Navigate to provider search on the Echo screen, not return search evidence. |
+| `play_youtube` | `query` (the video's title) | Show the YouTube results, then play the first result in the native full-screen player. |
 | `close_app` | none | Cancel pending app work and request asynchronous closure. |
 | `app_status` | none | Read the daemon's actual display-app state. |
 
@@ -89,7 +90,7 @@ The result is a static ARMv7 sidecar. Build/test ownership is
 [`go.mod`](../xiaozhi-search/go.mod), [`main_test.go`](../xiaozhi-search/main_test.go),
 [`app_control_test.go`](../xiaozhi-search/app_control_test.go),
 [`main.go`](../xiaozhi-search/main.go), and [`app_control.go`](../xiaozhi-search/app_control.go).
-Version `1.2.0` adds app-control tools; earlier search/reboot observations do not validate this binary.
+Version `1.2.0` adds app-control tools and `1.3.0` adds `play_youtube`; earlier search/reboot observations do not validate this binary.
 A generic local build is not promised to match a prerelease checksum: release build IDs and inputs
 also matter. Verify downloaded artifacts against the release's checksum before packaging them.
 
@@ -196,7 +197,7 @@ its owner/mode, then recreate `enabled`.
 Read `/run/xiaozhi-search/status.json` on the device. It contains connection, initialization,
 tool-catalog and call counters, not endpoint tokens, queries or results. `tool_calls` counts
 executed handlers; `successful_searches` remains specific to Exa `web_search`.
-`open_app_calls`, `search_on_screen_calls`, `close_app_calls`, and `app_status_calls` are distinct
+`open_app_calls`, `search_on_screen_calls`, `play_youtube_calls`, `close_app_calls`, and `app_status_calls` are distinct
 app-tool counters. `app_tool_errors` records bridge/handler failures, while `app_queued_responses`
 counts only queued acknowledgements, **not apps opened**. Schema-rejected calls may not reach handlers.
 Status is RAM-only and resets on reboot. The launcher discards process stdout/stderr;

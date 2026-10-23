@@ -44,6 +44,15 @@ class SessionControlTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     session.initial_browser_url('web')
 
+    def test_only_a_requested_play_of_youtube_results_autoplays(self):
+        results = 'https://www.youtube.com/results?search_query=chuy%E1%BB%87n+%C4%91%C3%AAm+mu%E1%BB%99n+t%E1%BA%ADp+14'
+        with patch.dict(os.environ, {'TECHO5_APP_PLAY': '1'}):
+            self.assertEqual(session.play_query(results), 'chuyện đêm muộn tập 14')
+            self.assertIsNone(session.play_query('https://www.google.com/search?q=hello'))
+            self.assertIsNone(session.play_query('https://www.youtube.com/'))
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(session.play_query(results))
+
     @unittest.skipUnless(os.name == 'posix', 'real inherited-fd behavior requires POSIX')
     def test_ready_acknowledges_and_closes_real_pipe(self):
         read_fd, write_fd = os.pipe()

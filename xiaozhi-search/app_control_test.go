@@ -60,6 +60,9 @@ func TestAppToolsRejectInvalidConsumerArguments(t *testing.T) {
 		{"search_on_screen", map[string]any{"target": "browser", "query": "hello"}},
 		{"search_on_screen", map[string]any{"target": "web", "query": "  "}},
 		{"search_on_screen", map[string]any{"target": "web", "query": strings.Repeat("ệ", 501)}},
+		{"play_youtube", map[string]any{"query": " "}},
+		{"play_youtube", map[string]any{"query": "chuyện đêm muộn", "target": "netflix"}},
+		{"play_youtube", map[string]any{}},
 		{"close_app", map[string]any{"app": "browser"}},
 		{"app_status", map[string]any{"command": "id"}},
 	} {
@@ -90,6 +93,7 @@ func TestAppToolsUnavailableIsVisibleFailure(t *testing.T) {
 	}{
 		{"open_app", map[string]any{"app": "youtube"}},
 		{"search_on_screen", map[string]any{"target": "netflix", "query": "tiếng Việt"}},
+		{"play_youtube", map[string]any{"query": "chuyện đêm muộn tập 14"}},
 		{"close_app", map[string]any{}},
 		{"app_status", map[string]any{}},
 	} {
@@ -102,7 +106,7 @@ func TestAppToolsUnavailableIsVisibleFailure(t *testing.T) {
 			}
 		}
 	}
-	if status.state.AppErrors != 4 || status.state.OpenAppCalls != 1 || status.state.SearchOnScreenCalls != 1 || status.state.CloseAppCalls != 1 || status.state.AppStatusCalls != 1 || status.state.Successes != 0 {
+	if status.state.AppErrors != 5 || status.state.OpenAppCalls != 1 || status.state.SearchOnScreenCalls != 1 || status.state.PlayYouTubeCalls != 1 || status.state.CloseAppCalls != 1 || status.state.AppStatusCalls != 1 || status.state.Successes != 0 {
 		t.Fatalf("app and search counters conflated: %+v", status.state)
 	}
 }
@@ -201,13 +205,38 @@ func TestQueuedScreenSearchPreservesVietnameseWithoutClaimingOpen(t *testing.T) 
 	}
 }
 
+// Playing a named video sends the fixed play action for YouTube with the title as heard; the
+// model cannot pick another provider.
+func TestPlayYouTubeSendsTheTitleToPlay(t *testing.T) {
+	requests := make(chan appControlRequest, 1)
+	path := serveAppResponse(t, func(conn net.Conn) {
+		line, _ := bufio.NewReader(conn).ReadBytes('\n')
+		var request appControlRequest
+		_ = json.Unmarshal(line, &request)
+		requests <- request
+		_, _ = io.WriteString(conn, "{\"ok\":true,\"state\":\"queued\",\"app\":\"youtube\",\"request_id\":8}\n")
+	})
+	session, status := appToolSession(t, appControlClient{socketPath: path})
+	result, err := callAppTool(t, session, "play_youtube", map[string]any{"query": " chuyện đêm muộn tập 14 "})
+	if err != nil || result.IsError {
+		t.Fatalf("queued play failed: %v %+v", err, result)
+	}
+	request := <-requests
+	if request.Action != "play" || request.App != "youtube" || request.Query != "chuyện đêm muộn tập 14" {
+		t.Fatalf("play request changed: %+v", request)
+	}
+	if status.state.PlayYouTubeCalls != 1 || status.state.AppQueuedResponses != 1 {
+		t.Fatalf("play not counted: %+v", status.state)
+	}
+}
+
 func TestAppToolsExposeStrictSchemasAndMutationHints(t *testing.T) {
 	session, _ := appToolSession(t, appControlClient{})
 	catalog, err := session.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog.Tools) != 4 {
+	if len(catalog.Tools) != 5 {
 		t.Fatal("missing app tools")
 	}
 	for _, tool := range catalog.Tools {
@@ -231,6 +260,8 @@ func TestAppRequestValidationRejectsIrrelevantAndInvalidUTF8Input(t *testing.T) 
 		{Action: "status", Query: "hidden"},
 		{Action: "open", App: "browser", Query: "hidden"},
 		{Action: "search", App: "web", Query: "a\xff"},
+		{Action: "play", App: "netflix", Query: "chuyện đêm muộn"},
+		{Action: "play", App: "youtube", Query: "x"},
 	} {
 		_, err := client.call(context.Background(), in)
 		if err == nil || strings.Contains(err.Error(), "unavailable") {

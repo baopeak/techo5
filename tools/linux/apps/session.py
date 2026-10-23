@@ -60,6 +60,16 @@ def initial_browser_url(kind):
         raise ValueError('unsupported app destination') from None
 
 
+def play_query(url):
+    """The search to play natively when the daemon asked to play the first result of url, else None."""
+    if os.environ.get('TECHO5_APP_PLAY') != '1':
+        return None
+    parts = urlsplit(url)
+    if parts.netloc != 'www.youtube.com' or parts.path != '/results':
+        return None
+    return parse_qsl(parts.query)[0][1].strip()
+
+
 def notify_browser_ready():
     value = os.environ.get('TECHO5_APP_READY_FD')
     if value is None:
@@ -327,6 +337,9 @@ def main():
     keyboard_env = dict(env)
     keyboard_env['TECHO5_BROWSER_CLASS'] = ENGINE
     keyboard_env['TECHO5_APP_KIND'] = sys.argv[1]
+    query_to_play = play_query(initial_url)
+    if query_to_play:
+        keyboard_env['TECHO5_PLAY_QUERY'] = query_to_play
     keyboard_fds = ()
     if os.environ.get('TECHO5_VIDEO_FD') == '3':
         os.fstat(3)  # Fail closed if the native supervisor did not supply its pipe.

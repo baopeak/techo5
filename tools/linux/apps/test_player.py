@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 from player import (QUALITIES, extractor_options, needs_sign_in, next_quality, parse_args,
-                    quality_from, select_formats, validate_url)
+                    quality_from, select_formats, validate_query, validate_url)
 
 
 class UrlTests(unittest.TestCase):
@@ -78,11 +78,16 @@ class FormatTests(unittest.TestCase):
 
     def test_arguments_carry_quality_to_extractor(self):
         url = "https://youtu.be/abcdefgh_-1"
-        self.assertEqual(parse_args([url]), (False, 720, url))
-        self.assertEqual(parse_args(["--max-height", "720", url]), (False, 720, url))
-        self.assertEqual(parse_args(["--extract", "--max-height", "360", url]), (True, 360, url))
-        self.assertEqual(parse_args(["--max-height", "9999", url]), (False, 720, url))
-        for argv in ([], ["--max-height", url], [url, url], ["--max-height"]):
+        self.assertEqual(parse_args([url]), (False, 720, False, url))
+        self.assertEqual(parse_args(["--max-height", "720", url]), (False, 720, False, url))
+        self.assertEqual(parse_args(["--extract", "--max-height", "360", url]), (True, 360, False, url))
+        self.assertEqual(parse_args(["--max-height", "9999", url]), (False, 720, False, url))
+        self.assertEqual(parse_args(["--max-height", "720", "--search", "chuyện đêm muộn tập 14"]),
+                         (False, 720, True, "chuyện đêm muộn tập 14"))
+        self.assertEqual(parse_args(["--extract", "--max-height", "480", "--search", "x y"]),
+                         (True, 480, True, "x y"))
+        for argv in ([], ["--max-height", url], [url, url], ["--max-height"], ["--search"],
+                     ["--search", "--search"]):
             with self.subTest(argv=argv):
                 self.assertIsNone(parse_args(argv))
 
@@ -116,6 +121,12 @@ class ExtractorTests(unittest.TestCase):
 
     def test_node_is_tried_before_quickjs(self):
         self.assertEqual(list(extractor_options("/nonexistent")["js_runtimes"]), ["node", "quickjs"])
+
+    def test_search_words_are_bounded_and_tidied(self):
+        self.assertEqual(validate_query("  chuyện  đêm muộn\ttập 14 "), "chuyện đêm muộn tập 14")
+        for value in (None, "", " x ", "a" * 501, "ok\x00no"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                validate_query(value)
 
     def test_sign_in_refusal_is_told_apart(self):
         self.assertTrue(needs_sign_in(Exception(

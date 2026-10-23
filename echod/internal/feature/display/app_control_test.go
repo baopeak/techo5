@@ -23,6 +23,9 @@ func TestAppControlStrictRequests(t *testing.T) {
 		`{"action":"search","app":"browser","query":"valid"}`,
 		`{"action":"search","app":"web","query":" x "}`,
 		`{"action":"search","app":"web","query":"` + strings.Repeat("界", 501) + `"}`,
+		`{"action":"play","app":"netflix","query":"valid"}`,
+		`{"action":"play","app":"youtube","query":" x "}`,
+		`{"action":"play","app":"youtube"}`,
 		`{"action":"status","app":"browser"}`,
 		`{"action":"close","query":"private"}`,
 		`{"action":"status","command":"private"}`,
@@ -39,7 +42,7 @@ func TestAppControlStrictRequests(t *testing.T) {
 	if _, err := readAppControl(strings.NewReader(`{"action":"status"}`)); err == nil {
 		t.Fatal("accepted unterminated request")
 	}
-	for _, input := range []string{`{"action":"status"}`, `{"action":"close"}`, `{"action":"open","app":"netflix"}`, `{"action":"search","app":"web","query":"  âm nhạc Việt  "}`} {
+	for _, input := range []string{`{"action":"status"}`, `{"action":"close"}`, `{"action":"open","app":"netflix"}`, `{"action":"search","app":"web","query":"  âm nhạc Việt  "}`, `{"action":"play","app":"youtube","query":"chuyện đêm muộn tập 14"}`} {
 		if _, err := readAppControl(strings.NewReader(input + "\n")); err != nil {
 			t.Fatal(err)
 		}
@@ -69,6 +72,47 @@ func TestAppControlProviderURLs(t *testing.T) {
 		if got := appIntentFor(appControlRequest{Action: "open", App: app}).url; got != want {
 			t.Fatalf("%s default URL mismatch", app)
 		}
+	}
+}
+
+// Playing a named video opens its YouTube results, marked to play the first one; nothing else is.
+func TestAppControlPlayOpensResultsMarkedToPlay(t *testing.T) {
+	query := "chuyện đêm muộn tập 14"
+	in := appIntentFor(appControlRequest{Action: "play", App: "youtube", Query: query})
+	u, err := url.Parse(in.url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !in.play || in.app != "youtube" || u.Host != "www.youtube.com" || u.Path != "/results" || u.Query().Get("search_query") != query {
+		t.Fatalf("play intent = %+v", in)
+	}
+	if appIntentFor(appControlRequest{Action: "search", App: "youtube", Query: query}).play {
+		t.Fatal("a search was marked to play")
+	}
+
+	a := &localApps{}
+	a.mu.Lock()
+	a.nextRequest++
+	a.queueControl(appControlRequest{Action: "play", App: "youtube", Query: query})
+	a.prepareControl(false)
+	if a.requested != "youtube" || !a.launchPlay || a.launchURL != in.url {
+		t.Fatalf("play did not reach the launch: requested=%q play=%v", a.requested, a.launchPlay)
+	}
+	a.mu.Unlock()
+}
+
+// Coming back from the played video to its results page does not play the first result again.
+func TestLocalAppsReturnFromPlayedVideoDoesNotPlayAgain(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	a := &localApps{nativeID: 7, returnKind: "youtube", launchPlay: true,
+		returnURL: "https://www.youtube.com/results?search_query=chuy%E1%BB%87n"}
+	idle := video.State{Phase: video.Idle, LastID: 7, Ended: 7}
+	if a.nativeReturnAfter(idle, func(uint64) <-chan struct{} { return done }, func() {}) != "youtube" {
+		t.Fatal("no return to the browser")
+	}
+	if a.launchPlay || a.launchURL == "" {
+		t.Fatalf("return relaunch play=%v url=%q", a.launchPlay, a.launchURL)
 	}
 }
 
