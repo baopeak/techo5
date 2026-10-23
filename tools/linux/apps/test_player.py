@@ -6,8 +6,9 @@ import os
 import tempfile
 import unittest
 
-from player import (QUALITIES, extractor_options, needs_sign_in, next_quality, parse_args,
-                    quality_from, select_formats, validate_query, validate_url)
+from player import (QUALITIES, best_result, extractor_options, needs_sign_in, next_quality,
+                    parse_args, plain_words, quality_from, select_formats, validate_query,
+                    validate_url)
 
 
 class UrlTests(unittest.TestCase):
@@ -127,6 +128,30 @@ class ExtractorTests(unittest.TestCase):
         for value in (None, "", " x ", "a" * 501, "ok\x00no"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 validate_query(value)
+
+    # YouTube's first results on crown for the title heard with wrong marks, then searched without
+    # marks (2026-10-23); the episode asked for is only in the second list, third.
+    HEARD = "chuyến đêm muôn tập 14"
+    RESULTS = [
+        ("NPUaSVjCrg4", "2 Ngày 1 Đêm Việt Nam|Tập 14: Dương Lâm hóa bác sĩ mổ ruột thừa"),
+        ("NMBOiIenTyI", "Vua Lính Đánh Thuê Mạnh Nhất | HH VietSub"),
+        ("CtRwKf49SSQ", "Ơn Giời Cậu Đây Rồi Mùa 8 Tập 14 | Khánh Phương hóa trai Nhật"),
+        ("eY8fmh4EnqQ", "ĐÊM ĐỊNH MỆNH: BẾN ĐỖ MUỘN MÀNG - [TẬP 14] - TRUYỆN TÂM LÝ XÃ HỘI HAY"),
+        ("_ZZvBSZb4dA", "TÌNH MUỘN - Tập 14 | Mạnh Tử Nghĩa & Trương Lăng Hách"),
+        ("8CFIqnX52WY", "CHUYỆN ĐÊM MUỘN #14: KHI BI QUAN VÀ BUỒN CHÁN NHẤT TÔI LÀM GÌ"),
+    ]
+
+    def test_title_heard_with_wrong_marks_finds_the_episode(self):
+        entries = [{"id": i, "title": t} for i, t in self.RESULTS]
+        self.assertEqual(plain_words("Chuyện ĐÊM muộn #14"), ["chuyen", "dem", "muon", "14"])
+        self.assertEqual(best_result(self.HEARD, entries)["id"], "8CFIqnX52WY")
+        self.assertEqual(best_result("chuyện đêm muộn tập 14", entries)["id"], "8CFIqnX52WY")
+
+    def test_no_matching_title_keeps_youtubes_first(self):
+        entries = [{"id": "NMBOiIenTyI", "title": "Vua Lính"}, {"id": "abcdefgh_-1", "title": "Khác"}]
+        self.assertEqual(best_result("zzz qqq", entries)["id"], "NMBOiIenTyI")
+        with self.assertRaises(ValueError):
+            best_result("x y", [{"id": "not an id", "title": "x y"}])
 
     def test_sign_in_refusal_is_told_apart(self):
         self.assertTrue(needs_sign_in(Exception(

@@ -2,8 +2,8 @@
 """Extract a public YouTube URL locally and hand it to TECHO5's native player.
 
 Invoked by keyboard.py as `player.py [--max-height 360|480|720] URL` with one
-HTTPS YouTube URL, or `... --search WORDS` to play the first YouTube result for a
-title Xiaozhi heard (play_youtube). No downloads, shell, external rendering or X11 video
+HTTPS YouTube URL, or `... --search WORDS` to play the YouTube result best matching
+a title Xiaozhi heard (play_youtube), searched with and without Vietnamese marks. No downloads, shell, external rendering or X11 video
 decoder. When the browser profile is signed in, its own cookies are read (never
 copied out or logged), since YouTube asks anonymous extraction from a flagged
 address to sign in. yt-dlp, solving YouTube's JS challenge with Node when
@@ -15,6 +15,7 @@ handoff, 5 YouTube asked to sign in. Extraction has a 120-second deadline (room
 for QuickJS); cancellation reaps its child.
 """
 
+import difflib
 import json
 import os
 import re
@@ -22,6 +23,7 @@ import signal
 import stat
 import subprocess
 import sys
+import unicodedata
 from urllib.parse import parse_qs, urlsplit
 
 
@@ -149,7 +151,7 @@ def select_formats(info, max_height=DEFAULT_QUALITY):
 def extractor_options(profile=BROWSER_PROFILE):
     """yt-dlp options: quiet, no cache, Node before QuickJS, the browser's cookies if it has any."""
     options = {"quiet": True, "no_warnings": True, "noplaylist": True,
-               "skip_download": True, "cachedir": False,
+               "skip_download": True, "cachedir": False, "logger": QuietLogger(),
                "socket_timeout": 15, "retries": 1, "extractor_retries": 1,
                "js_runtimes": {"node": {}, "quickjs": {}}, "remote_components": set()}
     if os.path.isfile(os.path.join(profile, "Default", "Cookies")):
@@ -158,27 +160,60 @@ def extractor_options(profile=BROWSER_PROFILE):
     return options
 
 
+class QuietLogger:
+    """yt-dlp logger that keeps signed URLs and errors out of every log."""
+
+    def debug(self, message):
+        pass
+
+    info = debug
+    warning = debug
+    error = debug
+
+
+def plain_words(text):
+    """Lowercase words without Vietnamese marks or đ: speech recognition slips most in the marks."""
+    text = unicodedata.normalize("NFD", text.replace("đ", "d").replace("Đ", "D"))
+    return re.findall(r"\w+", "".join(c for c in text if unicodedata.category(c) != "Mn").lower())
+
+
+def title_score(query, title):
+    """How well a title matches the words asked for, marks aside; runs of them in order count most."""
+    matcher = difflib.SequenceMatcher(None, plain_words(query), plain_words(title), autojunk=False)
+    return sum(block.size * block.size for block in matcher.get_matching_blocks())
+
+
+def best_result(query, entries):
+    """The result whose title matches query best, earlier results winning ties; else the first."""
+    entries = [entry for entry in entries if VIDEO_ID.fullmatch(str(entry.get("id") or ""))]
+    if not entries:
+        raise ValueError("No search result")
+    best = max(entries, key=lambda entry: title_score(query, str(entry.get("title") or "")))
+    return best if title_score(query, str(best.get("title") or "")) else entries[0]
+
+
+def find_video(query):
+    """The watch URL best matching query among YouTube's first results for it, with and without marks.
+
+    A title heard with a wrong mark ("chuyến đêm muôn") misses the video searched as is, but
+    finds it searched without marks; the title match then picks it from either list."""
+    import yt_dlp
+
+    options = extractor_options()
+    options["extract_flat"] = "in_playlist"
+    entries = []
+    with yt_dlp.YoutubeDL(options) as downloader:
+        for words in dict.fromkeys([query, " ".join(plain_words(query))]):
+            info = downloader.extract_info("ytsearch5:" + words, download=False)
+            entries += [entry for entry in info.get("entries") or [] if entry]
+    return "https://www.youtube.com/watch?v=" + best_result(query, entries)["id"]
+
+
 def extract(url, max_height=DEFAULT_QUALITY):
     import yt_dlp
 
-    class QuietLogger:
-        def debug(self, message):
-            pass
-
-        info = debug
-        warning = debug
-        error = debug
-
-    options = extractor_options()
-    options["logger"] = QuietLogger()
-    with yt_dlp.YoutubeDL(options) as downloader:
+    with yt_dlp.YoutubeDL(extractor_options()) as downloader:
         info = downloader.extract_info(url, download=False)
-    if "entries" in info:
-        # A ytsearch1: search: its one entry is the first result, already extracted.
-        entries = [entry for entry in info["entries"] if entry]
-        if not entries:
-            raise ValueError("No search result")
-        info = entries[0]
     return select_formats(info, max_height)
 
 
@@ -188,7 +223,8 @@ def main(argv):
         return 2
     extracting, max_height, searching, target = parsed
     try:
-        url = "ytsearch1:" + validate_query(target) if searching else validate_url(target)
+        query = validate_query(target) if searching else None
+        url = None if searching else validate_url(target)
     except (ValueError, TypeError):
         return 2
 
@@ -202,7 +238,7 @@ def main(argv):
     signal.signal(signal.SIGINT, stop)
     if extracting:
         try:
-            sys.stdout.write(json.dumps(extract(url, max_height)))
+            sys.stdout.write(json.dumps(extract(find_video(query) if searching else url, max_height)))
             return 0
         except Exception as error:
             return SIGN_IN if needs_sign_in(error) else 3
