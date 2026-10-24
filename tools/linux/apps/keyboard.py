@@ -231,6 +231,7 @@ def main():
             self.video_request = 0
             self.quality = load_quality()
             self.fullscreen = False
+            self.fullscreen_generation = 0
             self.exit_handle = None
             self.closed = False
             self.screen = self.get_screen()
@@ -594,12 +595,22 @@ def main():
             self.sync_fullscreen()
             self.tell_daemon(b"windowed\n")
 
-        def sync_fullscreen(self, tries=3):
+        def sync_fullscreen(self, tries=3, generation=None):
             """Make the browser's real full screen match self.fullscreen. F11 toggles, and one sent
             while Chromium is still changing state can be lost: a quick Toàn màn hình then Thoát left
             it full screen over a keyboard that thought it was back. So the window's own state is
-            read, F11 is sent only when it differs, and it is read again until it agrees."""
+            read, F11 is sent only when it differs, and it is read again until it agrees. The next
+            read is booked here, not after this one: a stuck X tool clears the queue, read included.
+            Each press starts its own chain of reads and retires the one before, so two chains never
+            send F11 together."""
+            if generation is None:
+                self.fullscreen_generation += 1
+                generation = self.fullscreen_generation
+            elif generation != self.fullscreen_generation:
+                return
             want = self.fullscreen
+            if tries > 1:
+                GLib.timeout_add(1500, lambda: self.sync_fullscreen(tries - 1, generation) and False)
 
             def found(output):
                 windows = [line for line in output.splitlines() if line.isdecimal()]
@@ -608,15 +619,13 @@ def main():
                 window = windows[-1]
 
                 def checked(state):
-                    if self.closed or want != self.fullscreen:
-                        return  # a later press has its own check
+                    if self.closed or generation != self.fullscreen_generation:
+                        return  # a later press has its own chain
                     if ("_NET_WM_STATE_FULLSCREEN" in state) == want:
                         return
                     self.queue.extendleft(reversed([
                         (["xdotool", "windowactivate", "--sync", window], None),
                         (["xdotool", "key", "--clearmodifiers", "F11"], None)]))
-                    if tries > 1:
-                        GLib.timeout_add(1500, lambda: self.sync_fullscreen(tries - 1) and False)
 
                 self.queue.appendleft((["xprop", "-id", window, "_NET_WM_STATE"], checked))
             self.enqueue([(["xdotool", "search", "--onlyvisible", "--class",
