@@ -33,6 +33,8 @@ Measured on `crown` at 1280×800:
 
 1080p is not offered. Even with these shortcuts, 1080p24 decoded at only about 1.7× real time, below the margin 720p needs. It would also be scaled down to the 800-line panel anyway.
 
+Kodi was tried as a lighter Netflix player, using Widevine through inputstream.adaptive with no DRM bypass. It is not used. On crown it has no usable GPU, so Kodi renders through software OpenGL (llvmpipe). A non-DRM 720p30 H.264 stream dropped 540 frames in about 90 s. Chromium and the native player draw straight to the framebuffer. Kodi was removed again from the app root.
+
 DRM and paid or account-restricted videos are not supported. Internet access and a currently working YouTube extractor remain necessary.
 
 ## Runtime layout and preparation
