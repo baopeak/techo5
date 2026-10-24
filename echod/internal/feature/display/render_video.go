@@ -43,12 +43,19 @@ func (r *renderer) videoSeekButtons() (backward, forward image.Rectangle) {
 	return backward, backward.Add(image.Pt(w+gap, 0))
 }
 
-// videoTrackButtons are the sound and subtitle choices, in the top right corner, clear of the
-// bottom row: subtitles in the corner, the sound left of them.
+// videoTrackButtons are the sound and subtitle choices, in the bottom row's two gaps: the sound
+// between Stop and -10s, the subtitles between +10s and quieter. Inside the strip, so what the panel
+// blends over every frame stays the strip: a button anywhere else widens that to most of the screen,
+// and blending it on every frame took a 24 fps video down to 6.
 func (r *renderer) videoTrackButtons() (audio, subtitle image.Rectangle) {
-	w, h, gap := r.s(videoButtonW), r.s(videoButtonH), r.s(videoGap)
-	subtitle = image.Rect(r.w-r.margin-w, r.margin, r.w-r.margin, r.margin+h)
-	return subtitle.Sub(image.Pt(w+gap, 0)), subtitle
+	_, stop, quieter, _ := r.videoButtons()
+	backward, forward := r.videoSeekButtons()
+	w := r.s(videoButtonW)
+	centered := func(left, right int) image.Rectangle {
+		x := (left + right - w) / 2
+		return image.Rect(x, stop.Min.Y, x+w, stop.Max.Y)
+	}
+	return centered(stop.Max.X, backward.Min.X), centered(forward.Max.X, quieter.Min.X)
 }
 
 func (r *renderer) videoTimeline() image.Rectangle {
@@ -162,7 +169,11 @@ func (r *renderer) videoControls(s scene) image.Rectangle {
 		at = "Loading…"
 	}
 	line := r.videoTimeline()
-	r.text(r.tiny, r.fit(r.tiny, name, r.w/2-r.margin), r.margin, line.Max.Y+r.s(14), cream)
+	room := r.w/2 - r.margin
+	if len(s.video.AudioTracks) > 1 || len(s.video.Subtitles) > 0 {
+		room = r.w/3 - r.margin // the chosen sound and subtitles sit in the middle of the row
+	}
+	r.text(r.tiny, r.fit(r.tiny, name, room), r.margin, line.Max.Y+r.s(14), cream)
 	r.text(r.tiny, at, r.w-r.margin-r.width(r.tiny, at), line.Max.Y+r.s(14), dim)
 	zones := []image.Rectangle{play, stop, quieter, louder}
 	if s.video.Dur > 0 {
@@ -184,7 +195,7 @@ func (r *renderer) videoControls(s scene) image.Rectangle {
 	} else {
 		zones = append(zones, image.Rectangle{}, image.Rectangle{}, image.Rectangle{})
 	}
-	strip = strip.Union(r.videoTracks(s, rad, &zones))
+	r.videoTracks(s, rad, line, &zones)
 
 	r.zmu.Lock()
 	r.videoZones = zones
@@ -193,8 +204,9 @@ func (r *renderer) videoControls(s scene) image.Rectangle {
 }
 
 // videoTracks draws the sound and subtitle buttons when the video has choices, with what is chosen
-// under them, and adds their zones (empty for a choice there is not) after the timeline's.
-func (r *renderer) videoTracks(s scene, rad float64, zones *[]image.Rectangle) image.Rectangle {
+// in the middle of the title row, and adds their zones (empty for a choice there is not) after the
+// timeline's.
+func (r *renderer) videoTracks(s scene, rad float64, line image.Rectangle, zones *[]image.Rectangle) {
 	v := s.video
 	audio, subtitle := r.videoTrackButtons()
 	var drawn image.Rectangle
@@ -224,18 +236,10 @@ func (r *renderer) videoTracks(s scene, rad float64, zones *[]image.Rectangle) i
 	}
 	*zones = append(*zones, audio, subtitle)
 	if drawn.Empty() {
-		return drawn
+		return
 	}
-	text := r.fit(r.tiny, strings.Join(words, " · "), r.w/2)
-	y := drawn.Max.Y + r.s(32)
-	back := image.Rect(r.w-r.margin-r.width(r.tiny, text)-r.s(16), drawn.Max.Y+r.s(4), r.w-r.margin, y+r.s(12))
-	op := draw.Src
-	if !s.videoLive {
-		op = draw.Over
-	}
-	draw.Draw(r.dst, back, image.NewUniform(videoStrip), image.Point{}, op)
-	r.text(r.tiny, text, r.w-r.margin-r.width(r.tiny, text)-r.s(8), y, cream)
-	return drawn.Union(back)
+	text := r.fit(r.tiny, strings.Join(words, " · "), r.w/3)
+	r.text(r.tiny, text, (r.w-r.width(r.tiny, text))/2, line.Max.Y+r.s(14), cream)
 }
 
 // videoCaption draws the subtitle line due, at most two lines on a shade, above the controls when

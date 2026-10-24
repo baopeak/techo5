@@ -54,6 +54,52 @@ func TestVideoSeekTargetsAreDisjointAndVODOnly(t *testing.T) {
 	}
 }
 
+// The sound and subtitle buttons sit in the bottom row, clear of every other control, and what the
+// panel blends over each frame stays the strip: blending a box from them to the strip took a video
+// from 24 fps to 6. A subtitle line drawn while the controls are up only adds the band above them.
+func TestVideoTrackButtonsStayInTheStrip(t *testing.T) {
+	for _, size := range []image.Point{{showWide, showHigh}, {show8Wide, show8High}} {
+		r := newRenderer(image.NewRGBA(image.Rectangle{Max: size}))
+		st := video.State{Phase: video.Playing, ID: 1, Frames: true, Dur: 100 * time.Second,
+			AudioTracks: []string{"Âm thanh gốc", "Lồng tiếng Việt"}, Subtitles: []string{"Tiếng Việt"}, Subtitle: -1}
+		over := r.videoPage(scene{video: st, showVideo: true, videoLive: true, videoControls: true})
+		strip := image.Rect(0, r.h-r.s(videoStripH), r.w, r.h)
+		if over != strip {
+			t.Fatalf("%v: blended %v, want the strip %v", size, over, strip)
+		}
+		play, stop, quieter, louder := r.videoButtons()
+		backward, forward := r.videoSeekButtons()
+		audio, subtitle := r.videoTrackButtons()
+		zones := []image.Rectangle{play, stop, quieter, louder, backward, forward, r.videoTimeline(), audio, subtitle}
+		for i, zone := range zones {
+			if !zone.In(strip) {
+				t.Fatalf("%v: target %d %v outside the strip", size, i, zone)
+			}
+			for j := i + 1; j < len(zones); j++ {
+				if !zone.Intersect(zones[j]).Empty() {
+					t.Fatalf("%v: targets %d and %d overlap", size, i, j)
+				}
+			}
+		}
+		for want, zone := range map[videoTap]image.Rectangle{videoTapAudio: audio, videoTapSubtitle: subtitle} {
+			if got := r.videoTapped(zone.Min.Add(image.Pt(zone.Dx()/2, zone.Dy()/2))); got != want {
+				t.Fatalf("%v: tapped %v, want %v", size, got, want)
+			}
+		}
+		st.Subtitle, st.Caption = 0, "xin chào các bạn"
+		over = r.videoPage(scene{video: st, showVideo: true, videoLive: true, videoControls: true})
+		if over.Min.Y < strip.Min.Y-r.s(200) || over.Max != strip.Max {
+			t.Fatalf("%v: with a caption blended %v", size, over)
+		}
+		// Without choices the buttons are not there to tap.
+		st = video.State{Phase: video.Playing, ID: 1, Frames: true, Dur: 100 * time.Second, Subtitle: -1}
+		r.videoPage(scene{video: st, showVideo: true, videoLive: true, videoControls: true})
+		if got := r.videoTapped(audio.Min.Add(image.Pt(audio.Dx()/2, audio.Dy()/2))); got != videoTapNone {
+			t.Fatalf("%v: a video without dubs offered them: %v", size, got)
+		}
+	}
+}
+
 func TestNativeBrowserLeaseSurvivesSeekAndReturnsOnce(t *testing.T) {
 	for _, ended := range []bool{false, true} {
 		a := localApps{nativeID: 41, returnKind: "youtube"}
