@@ -4,11 +4,12 @@ Run by deployment owner: python3 -m unittest discover -s tools/linux/apps.
 """
 import os
 import tempfile
+import time
 import unittest
 
-from player import (QUALITIES, best_result, extractor_options, needs_sign_in, next_quality,
-                    parse_args, plain_words, quality_from, select_formats, validate_query,
-                    validate_url)
+from player import (QUALITIES, audio_choices, best_result, compact_vtt, extractor_options,
+                    fetch_subtitles, needs_sign_in, next_quality, parse_args, plain_words,
+                    quality_from, select_formats, subtitle_sources, validate_query, validate_url)
 
 
 class UrlTests(unittest.TestCase):
@@ -119,6 +120,73 @@ class FormatTests(unittest.TestCase):
                         [{**self.video("v", 480), "url": "file:///tmp/v"}, self.audio("a")]):
             with self.subTest(formats=formats), self.assertRaises(ValueError):
                 select_formats({"formats": formats})
+
+
+class TrackTests(unittest.TestCase):
+    def audio(self, fid, lang, pref=-1, note="medium", codec="mp4a.40.2", abr=129.4):
+        return {"format_id": fid, "url": "https://media.example/" + fid, "vcodec": "none", "acodec": codec,
+                "abr": abr, "language": lang, "language_preference": pref, "format_note": note}
+
+    def test_dubs_offered_beside_the_original(self):
+        original = self.audio("140-9", "en-US", 10, "English (US) original (default), medium")
+        info = {"formats": [self.audio("140-1", "ml"), self.audio("140-2", "vi"), self.audio("140-3", "en-GB"),
+                            self.audio("251-2", "vi", codec="opus"), original]}
+        self.assertEqual(audio_choices(info, original), [
+            {"label": "Âm thanh gốc", "url": "https://media.example/140-9"},
+            {"label": "Lồng tiếng Việt", "url": "https://media.example/140-2"},
+            {"label": "Lồng tiếng Anh", "url": "https://media.example/140-3"}])
+        # No dub, or a video carrying its own sound: no choice to offer.
+        self.assertEqual(audio_choices({"formats": [original]}, original), [])
+        self.assertEqual(audio_choices(info, None), [])
+
+    def test_subtitles_prefer_the_uploaders_then_automatic(self):
+        vtt = lambda name: [{"ext": "json3", "url": "https://x/" + name + ".json"},
+                            {"ext": "vtt", "url": "https://x/" + name + ".vtt"}]
+        info = {"subtitles": {"en-GB": vtt("en-GB"), "live_chat": vtt("chat")},
+                "automatic_captions": {"vi": vtt("vi-tr"), "vi-orig": vtt("vi-orig"), "en": vtt("en-tr")}}
+        self.assertEqual(subtitle_sources(info), [("Tiếng Việt (tự động)", "https://x/vi-orig.vtt"),
+                                                  ("English", "https://x/en-GB.vtt")])
+        self.assertEqual(subtitle_sources({"automatic_captions": {"vi": vtt("vi")}}),
+                         [("Tiếng Việt (dịch tự động)", "https://x/vi.vtt")])
+        self.assertEqual(subtitle_sources({}), [])
+
+    def test_rolling_auto_captions_compact_to_plain_lines(self):
+        raw = ("WEBVTT\nKind: captions\nLanguage: vi\n\n"
+               "00:00:00.000 --> 00:00:02.000 align:start position:0%\n"
+               "Tôi<00:00:00.350><c> đã</c><c> về</c>\n\n"
+               "00:00:02.000 --> 00:00:02.010 align:start position:0%\nTôi đã về\n\n"
+               "00:00:02.010 --> 00:00:04.000 align:start position:0%\nTôi đã về\nnhà &amp; ngủ\n")
+        self.assertEqual(compact_vtt(raw), "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nTôi đã về\n\n"
+                                           "00:00:02.010 --> 00:00:04.000\nnhà & ngủ\n")
+
+    def test_slow_subtitles_do_not_hold_up_the_video(self):
+        class Response:
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, limit):
+                return self.body
+
+        class Downloader:
+            def urlopen(self, url):
+                if "slow" in url:
+                    time.sleep(2)
+                if "bad" in url:
+                    raise OSError("429")
+                return Response(b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nxin ch\xc3\xa0o\n")
+
+        start = time.monotonic()
+        got = fetch_subtitles(Downloader(), [("A", "https://x/fast"), ("B", "https://x/slow"),
+                                             ("C", "https://x/bad")], wait=0.5)
+        self.assertLess(time.monotonic() - start, 1.5)
+        self.assertEqual([s["label"] for s in got], ["A"])
+        self.assertIn("xin chào", got[0]["vtt"])
 
 
 class ExtractorTests(unittest.TestCase):

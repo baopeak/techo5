@@ -86,6 +86,7 @@ type session struct {
 	soundIn        bool  // the sound's pipe has ended
 	soundErr       error // explicitly separate sound ended without supplying any PCM
 	audioValidated bool  // actual PCM decoded from this request's separate audio, retained by seeks only
+	audioIndex     int   // which of req.AudioTracks AudioURL is, retained by seeks
 	silentTail     bool  // a previously validated seek reached audio EOF before any output PCM
 	soundGone      bool  // the speaker was taken from it: the video is over
 	wallBase       time.Duration

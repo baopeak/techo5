@@ -124,6 +124,27 @@ func TestBrowserVideoRequestValidation(t *testing.T) {
 	if _, err := readBrowserVideo(strings.NewReader(`{"url":"https://video.example/stream"}` + "\n")); err != nil {
 		t.Fatalf("muxed stream rejected: %v", err)
 	}
+	withTracks := `{"url":"https://video.example/stream","audio_url":"https://audio.example/orig",` +
+		`"audio_tracks":[{"label":"Âm thanh gốc","url":"https://audio.example/orig"},{"label":"Lồng tiếng Việt","url":"https://audio.example/vi"}],` +
+		`"subtitles":[{"label":"Tiếng Việt","vtt":"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nxin chào\n"}]}`
+	if req, err := readBrowserVideo(strings.NewReader(withTracks + "\n")); err != nil || len(req.AudioTracks) != 2 || len(req.Subtitles) != 1 {
+		t.Fatalf("sounds and subtitles rejected: %+v %v", req, err)
+	} else if tr := videoTracks(req.Subtitles); tr[0].Text == "" || tr[0].URL != "" {
+		t.Fatalf("subtitles not carried as text: %+v", tr)
+	}
+	for name, input := range map[string]string{
+		"subtitle address": `{"url":"https://video.example/stream","subtitles":[{"label":"x","url":"https://x.example/a.vtt"}]}`,
+		"empty subtitle":   `{"url":"https://video.example/stream","subtitles":[{"label":"x"}]}`,
+		"sound as text":    `{"url":"https://video.example/stream","audio_tracks":[{"label":"x","vtt":"WEBVTT"}]}`,
+		"file sound":       `{"url":"https://video.example/stream","audio_tracks":[{"label":"x","url":"file:///etc/passwd"}]}`,
+		"track field":      `{"url":"https://video.example/stream","audio_tracks":[{"label":"x","url":"https://a.example/","exec":1}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := readBrowserVideo(strings.NewReader(input + "\n")); err == nil {
+				t.Fatal("invalid track accepted")
+			}
+		})
+	}
 	for name, input := range map[string]string{
 		"empty":         "",
 		"missing video": `{"audio_url":"https://audio.example/stream"}`,

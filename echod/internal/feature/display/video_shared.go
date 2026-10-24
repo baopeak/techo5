@@ -25,6 +25,9 @@ const videoControls = 4 * time.Second
 // call or a ring coming over it is noticed within this, or at once when it wakes the loop.
 const videoRecheck = 500 * time.Millisecond
 
+// videoCaptionRecheck is how often it looks while subtitles are shown, for their lines to keep time.
+const videoCaptionRecheck = 200 * time.Millisecond
+
 // videoFailShown is how long the page says a video could not be played.
 const videoFailShown = 6 * time.Second
 
@@ -40,6 +43,8 @@ const (
 	videoTapBackward
 	videoTapForward
 	videoTapTimeline
+	videoTapAudio    // the next of the video's sounds (dubs)
+	videoTapSubtitle // the next of its subtitles, then none
 )
 
 // videoAsk is the question about a DLNA video, as drawn.

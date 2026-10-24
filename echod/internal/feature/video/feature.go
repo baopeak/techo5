@@ -70,6 +70,8 @@ type Feature struct {
 	err      string
 	errAt    time.Time
 
+	subs subtitles // the subtitles shown, for the video they were chosen on (tracks.go)
+
 	seekQueue []seekCommand
 	seekHead  int
 	seeking   bool // one worker preserves the order in which gestures were received
@@ -303,6 +305,12 @@ func (f *Feature) Play(req Request) (uint64, error) {
 			return 0, errors.New("the device does not fetch from itself")
 		}
 		req.AudioURL = audio.String()
+	}
+	if req.AudioTracks, err = checkTracks(req.AudioTracks); err != nil {
+		return 0, err
+	}
+	if req.Subtitles, err = checkSubtitles(req.Subtitles); err != nil {
+		return 0, err
 	}
 	f.mu.Lock()
 	if f.panelW == 0 {
@@ -599,6 +607,12 @@ func seekTarget(at, duration time.Duration, fps float64) (time.Duration, error) 
 }
 
 func (f *Feature) seek(id uint64, at time.Duration, relative bool) error {
+	return f.reload(id, at, relative, nil)
+}
+
+// reload replaces the current VOD's decoder at a position, keeping its public identity: a seek, or
+// with change, the same place with something about it changed (SwitchAudioID).
+func (f *Feature) reload(id uint64, at time.Duration, relative bool, change func(*session) error) error {
 	f.controls.Lock()
 	defer f.controls.Unlock()
 	f.mu.Lock()
@@ -620,7 +634,13 @@ func (f *Feature) seek(id uint64, at time.Duration, relative bool) error {
 	}
 	s := newSession(old.id, old.req, old.u, old.screen, old.panelW, old.panelH)
 	s.offset, s.info, s.rate, s.wallPaused = target, info, rate, old.paused()
-	s.audioValidated = audioValidated
+	s.audioValidated, s.audioIndex = audioValidated, old.audioIndex
+	if change != nil {
+		if err := change(s); err != nil {
+			f.mu.Unlock()
+			return err
+		}
+	}
 	s.ended, s.changed = f.sessionEnded, func() { f.Changed.Emit(struct{}{}) }
 	// Install before stopping: teardown and late EOF from the old decoder are never a public end.
 	f.cur = s
@@ -695,14 +715,19 @@ func (f *Feature) Covered(on bool) {
 func (f *Feature) State() State {
 	f.mu.Lock()
 	s, a := f.cur, f.ask
-	st := State{Phase: Idle, LastID: f.lastID, Ended: f.ended, Failed: f.failed, Err: f.err, ErrAt: f.errAt}
+	st := State{Phase: Idle, LastID: f.lastID, Ended: f.ended, Failed: f.failed, Err: f.err, ErrAt: f.errAt, Subtitle: -1}
 	if a != nil {
 		st.AskID = a.id
 	}
+	subs := f.subs
 	f.mu.Unlock()
 	switch {
 	case s != nil:
 		st.ID, st.Title, st.Origin, st.From, st.Host = s.id, s.req.Title, s.req.Origin, s.req.From, Host(s.u)
+		st.AudioTracks, st.Subtitles, st.Audio = labels(s.req.AudioTracks), labels(s.req.Subtitles), s.audioIndex
+		if subs.id == s.id {
+			st.Subtitle = subs.index
+		}
 		shown, dropped, started := s.numbers()
 		st.Shown, st.Dropped, st.Frames = shown, dropped, started
 		s.mu.Lock()
@@ -716,6 +741,9 @@ func (f *Feature) State() State {
 			if s.paused() {
 				st.Phase = Paused
 			}
+		}
+		if st.Subtitle >= 0 {
+			st.Caption = cueAt(subs.cues, st.Pos)
 		}
 	case a != nil:
 		st.ID, st.Title, st.Origin, st.From, st.Phase = a.id, a.req.Title, a.req.Origin, a.req.From, Asking

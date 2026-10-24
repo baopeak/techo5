@@ -5,6 +5,7 @@ package display
 import (
 	"image"
 	"image/draw"
+	"strings"
 	"time"
 
 	"github.com/HuskerMinion/techo5/echod/internal/feature/video"
@@ -42,6 +43,14 @@ func (r *renderer) videoSeekButtons() (backward, forward image.Rectangle) {
 	return backward, backward.Add(image.Pt(w+gap, 0))
 }
 
+// videoTrackButtons are the sound and subtitle choices, in the top right corner, clear of the
+// bottom row: subtitles in the corner, the sound left of them.
+func (r *renderer) videoTrackButtons() (audio, subtitle image.Rectangle) {
+	w, h, gap := r.s(videoButtonW), r.s(videoButtonH), r.s(videoGap)
+	subtitle = image.Rect(r.w-r.margin-w, r.margin, r.w-r.margin, r.margin+h)
+	return subtitle.Sub(image.Pt(w+gap, 0)), subtitle
+}
+
 func (r *renderer) videoTimeline() image.Rectangle {
 	return image.Rect(r.margin, r.h-r.s(176), r.w-r.margin, r.h-r.s(128))
 }
@@ -65,6 +74,9 @@ func (r *renderer) videoPage(s scene) (over image.Rectangle) {
 	}
 	if s.videoControls && s.video.Active() {
 		over = r.videoControls(s)
+	}
+	if s.videoLive && s.video.Caption != "" {
+		over = over.Union(r.videoCaption(s))
 	}
 	if s.showVolume {
 		r.volumeBar(s)
@@ -169,12 +181,86 @@ func (r *renderer) videoControls(s scene) image.Rectangle {
 		filled.Max.X = bar.Min.X + int(float64(bar.Dx())*float64(min(max(s.video.Pos, 0), s.video.Dur))/float64(s.video.Dur))
 		draw.Draw(r.dst, filled, image.NewUniform(cream), image.Point{}, draw.Over)
 		zones = append(zones, backward, forward, line)
+	} else {
+		zones = append(zones, image.Rectangle{}, image.Rectangle{}, image.Rectangle{})
 	}
+	strip = strip.Union(r.videoTracks(s, rad, &zones))
 
 	r.zmu.Lock()
 	r.videoZones = zones
 	r.zmu.Unlock()
 	return strip
+}
+
+// videoTracks draws the sound and subtitle buttons when the video has choices, with what is chosen
+// under them, and adds their zones (empty for a choice there is not) after the timeline's.
+func (r *renderer) videoTracks(s scene, rad float64, zones *[]image.Rectangle) image.Rectangle {
+	v := s.video
+	audio, subtitle := r.videoTrackButtons()
+	var drawn image.Rectangle
+	var words []string
+	if len(v.AudioTracks) > 1 {
+		fg := r.buttonFace(audio, rad, btnSecondary)
+		r.mdiIcon("account-voice", audio.Min.X+(audio.Dx()-r.s(videoIcon))/2, audio.Min.Y+(audio.Dy()-r.s(videoIcon))/2, videoIcon, fg)
+		drawn = drawn.Union(audio)
+		if v.Audio >= 0 && v.Audio < len(v.AudioTracks) {
+			words = append(words, v.AudioTracks[v.Audio])
+		}
+	} else {
+		audio = image.Rectangle{}
+	}
+	if len(v.Subtitles) > 0 {
+		style := btnSecondary
+		label := "Phụ đề: tắt"
+		if v.Subtitle >= 0 && v.Subtitle < len(v.Subtitles) {
+			style, label = btnPrimary, "Phụ đề: "+v.Subtitles[v.Subtitle]
+		}
+		fg := r.buttonFace(subtitle, rad, style)
+		r.mdiIcon("subtitles", subtitle.Min.X+(subtitle.Dx()-r.s(videoIcon))/2, subtitle.Min.Y+(subtitle.Dy()-r.s(videoIcon))/2, videoIcon, fg)
+		drawn = drawn.Union(subtitle)
+		words = append(words, label)
+	} else {
+		subtitle = image.Rectangle{}
+	}
+	*zones = append(*zones, audio, subtitle)
+	if drawn.Empty() {
+		return drawn
+	}
+	text := r.fit(r.tiny, strings.Join(words, " · "), r.w/2)
+	y := drawn.Max.Y + r.s(32)
+	back := image.Rect(r.w-r.margin-r.width(r.tiny, text)-r.s(16), drawn.Max.Y+r.s(4), r.w-r.margin, y+r.s(12))
+	op := draw.Src
+	if !s.videoLive {
+		op = draw.Over
+	}
+	draw.Draw(r.dst, back, image.NewUniform(videoStrip), image.Point{}, op)
+	r.text(r.tiny, text, r.w-r.margin-r.width(r.tiny, text)-r.s(8), y, cream)
+	return drawn.Union(back)
+}
+
+// videoCaption draws the subtitle line due, at most two lines on a shade, above the controls when
+// they are up and near the bottom when not, and says where.
+func (r *renderer) videoCaption(s scene) image.Rectangle {
+	room := r.w - 2*r.margin - r.s(32)
+	lines := r.wrapLines(r.body, s.video.Caption, room)
+	if len(lines) > 2 {
+		lines = append(lines[:1], r.fit(r.body, strings.Join(lines[1:], " "), room))
+	}
+	lineH := r.s(46)
+	bottom := r.h - r.s(28)
+	if s.videoControls {
+		bottom = r.h - r.s(videoStripH) - r.s(12)
+	}
+	widest := 0
+	for _, l := range lines {
+		widest = max(widest, r.width(r.body, l))
+	}
+	back := image.Rect((r.w-widest)/2-r.s(16), bottom-len(lines)*lineH-r.s(12), (r.w+widest)/2+r.s(16), bottom)
+	draw.Draw(r.dst, back, image.NewUniform(videoStrip), image.Point{}, draw.Src)
+	for i, l := range lines {
+		r.text(r.body, l, (r.w-r.width(r.body, l))/2, back.Min.Y+r.s(12)+(i+1)*lineH-r.s(12), cream)
+	}
+	return back
 }
 
 // videoTapped is which control a tap landed on, as last drawn. A finger is a little wider than a

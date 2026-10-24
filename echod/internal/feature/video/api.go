@@ -27,9 +27,22 @@ type Request struct {
 	AudioURL string // optional separate sound input; otherwise URL supplies both streams
 	Title    string
 
+	// AudioTracks are the sounds the viewer may switch between, the first the one AudioURL plays;
+	// Subtitles are WebVTT texts the viewer may show (tracks.go). Both are optional.
+	AudioTracks []Track
+	Subtitles   []Track
+
 	Origin Origin
 	// From is the address that asked, for a DLNA controller: what the screen names and remembers.
 	From string
+}
+
+// Track is one sound or subtitle choice: what the screen names it, and a sound's address or the
+// subtitles' WebVTT text.
+type Track struct {
+	Label string
+	URL   string
+	Text  string
 }
 
 // Phase is what the player is doing, as Home Assistant's Video sensor says it.
@@ -63,6 +76,12 @@ type State struct {
 
 	// Frames is whether the picture has begun to arrive.
 	Frames bool
+
+	// AudioTracks and Subtitles name the video's choices; Audio is the sound playing, Subtitle the
+	// subtitles shown (-1: none), and Caption their line due now.
+	AudioTracks, Subtitles []string
+	Audio, Subtitle        int
+	Caption                string
 
 	// AskID is the DLNA video whose question is on the screen, when there is one: while another video
 	// plays, the state is that video's, and this is how the one asking knows it is still asked about.

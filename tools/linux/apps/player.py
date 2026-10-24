@@ -3,7 +3,9 @@
 
 Invoked by keyboard.py as `player.py [--max-height 360|480|720] URL` with one
 HTTPS YouTube URL, or `... --search WORDS` to play the YouTube result best matching
-a title Xiaozhi heard (play_youtube), searched with and without Vietnamese marks. No downloads, shell, external rendering or X11 video
+a title Xiaozhi heard (play_youtube), searched with and without Vietnamese marks. The
+handoff also carries the original sound's Vietnamese/English dubs and, fetched within
+a few seconds, Vietnamese/English subtitles for the native player's buttons. No media downloads, shell, external rendering or X11 video
 decoder. When the browser profile is signed in, its own cookies are read (never
 copied out or logged), since YouTube asks anonymous extraction from a flagged
 address to sign in. yt-dlp, solving YouTube's JS challenge with Node when
@@ -16,13 +18,17 @@ for QuickJS); cancellation reaps its child.
 """
 
 import difflib
+import html
 import json
 import os
+import queue
 import re
 import signal
 import stat
 import subprocess
 import sys
+import threading
+import time
 import unicodedata
 from urllib.parse import parse_qs, urlsplit
 
@@ -122,6 +128,12 @@ def original_audio(item):
 
 def select_formats(info, max_height=DEFAULT_QUALITY):
     """Choose software-decodable H.264 up to max_height and a compatible audio stream."""
+    video, audio = choose_formats(info, max_height)
+    return video["url"], audio["url"] if audio else None
+
+
+def choose_formats(info, max_height=DEFAULT_QUALITY):
+    """The video format and the separate audio format (None when the video carries its sound)."""
     formats = info.get("formats", [])
     videos = []
     audios = []
@@ -147,7 +159,7 @@ def select_formats(info, max_height=DEFAULT_QUALITY):
                                            item.get("fps") or 0,
                                            item.get("tbr") or 0))
     if str(chosen.get("acodec") or "none").startswith(("mp4a", "aac", "opus")):
-        return chosen["url"], None
+        return chosen, None
     if not audios:
         raise ValueError("No compatible audio")
     # The original track first: YouTube adds auto-dubs at near-identical bitrates, so the best
@@ -155,7 +167,124 @@ def select_formats(info, max_height=DEFAULT_QUALITY):
     audio = max(audios, key=lambda item: (original_audio(item),
                                          str(item.get("acodec")).startswith(("mp4a", "aac")),
                                          item.get("abr") or item.get("tbr") or 0))
-    return chosen["url"], audio["url"]
+    return chosen, audio
+
+
+# Dubs offered beside the original sound, and subtitles offered, in this order.
+DUB_LANGUAGES = (("vi", "Lồng tiếng Việt"), ("en", "Lồng tiếng Anh"))
+SUBTITLE_LANGUAGES = (("vi", "Tiếng Việt"), ("en", "English"))
+# How long subtitles may hold up the handoff after extraction, and the most of one kept.
+SUBTITLE_WAIT = 6.0
+SUBTITLE_LIMIT = 300 * 1024
+# The most the daemon reads of one handoff (display/local_apps.go browserVideoLimit).
+REQUEST_LIMIT = 1 << 20
+
+
+def audio_choices(info, chosen):
+    """The original sound and its Vietnamese and English dubs, when there is a dub: what the native
+    player's sound button switches between. Only dubs in the chosen sound's codec, so its decoder
+    setup carries over."""
+    if chosen is None:
+        return []
+    codec = str(chosen.get("acodec") or "")[:4]
+    same = [item for item in info.get("formats", [])
+            if str(item.get("vcodec") or "none") == "none" and str(item.get("acodec") or "").startswith(codec)
+            and urlsplit(str(item.get("url") or "")).scheme == "https" and not original_audio(item)]
+    choices = [{"label": "Âm thanh gốc", "url": chosen["url"]}]
+    for lang, label in DUB_LANGUAGES:
+        dubs = [item for item in same if str(item.get("language") or "").split("-")[0] == lang]
+        if dubs:
+            best = max(dubs, key=lambda item: item.get("abr") or item.get("tbr") or 0)
+            choices.append({"label": label, "url": best["url"]})
+    return choices if len(choices) > 1 else []
+
+
+def subtitle_sources(info):
+    """(label, WebVTT address) for Vietnamese then English: the uploader's subtitles, else the
+    automatic ones in the video's own language, else YouTube's automatic translation."""
+    manual = {key: value for key, value in (info.get("subtitles") or {}).items() if key != "live_chat"}
+    automatic = info.get("automatic_captions") or {}
+
+    def vtt(entries):
+        for entry in entries or []:
+            if entry.get("ext") == "vtt" and urlsplit(str(entry.get("url") or "")).scheme == "https":
+                return entry["url"]
+        return None
+
+    sources = []
+    for lang, label in SUBTITLE_LANGUAGES:
+        keys = [key for key in manual if key == lang or key.startswith(lang + "-")]
+        found = [(label, vtt(manual[key])) for key in keys]
+        found += [(label + " (tự động)", vtt(automatic.get(lang + "-orig"))),
+                  (label + " (dịch tự động)", vtt(automatic.get(lang)))]
+        found = [(name, url) for name, url in found if url]
+        if found:
+            sources.append(found[0])
+    return sources
+
+
+def compact_vtt(text):
+    """WebVTT reduced to its times and plain lines: no styling, word timings or the line YouTube's
+    rolling captions repeat from the cue before, and no cue shorter than 50 ms."""
+    out, previous = ["WEBVTT", ""], ""
+    for block in re.split(r"\n\s*\n", text.replace("\r\n", "\n")):
+        lines = block.strip().split("\n")
+        timing = next((i for i, line in enumerate(lines) if "-->" in line), None)
+        if timing is None:
+            continue
+        start, _, rest = lines[timing].partition("-->")
+        end = (rest.split() or [""])[0]
+        if seconds(end) - seconds(start) < 0.05:
+            continue
+        words = [html.unescape(re.sub(r"<[^>]*>", "", line)).strip() for line in lines[timing + 1:]]
+        words = [line for line in words if line and line != previous]
+        if words:
+            out += ["%s --> %s" % (start.strip(), end), *words, ""]
+            previous = words[-1]
+    return "\n".join(out)
+
+
+def seconds(stamp):
+    """01:02:03.456 or 02:03.456 in seconds; -1 for anything else."""
+    try:
+        value = 0.0
+        for part in stamp.strip().replace(",", ".").split(":"):
+            value = value * 60 + float(part)
+        return value
+    except ValueError:
+        return -1.0
+
+
+def fetch_subtitles(downloader, sources, wait=SUBTITLE_WAIT):
+    """The subtitles fetched within wait, as {"label", "vtt"}, in sources' order. A fetch still
+    running is left behind: subtitles must not hold up the video."""
+    results = queue.Queue()
+
+    def fetch(index, label, url):
+        try:
+            with downloader.urlopen(url) as response:
+                text = response.read(4 * 1024 * 1024).decode("utf-8", "replace")
+            vtt = compact_vtt(text)
+            if "-->" in vtt and len(vtt.encode()) <= SUBTITLE_LIMIT:
+                results.put((index, {"label": label, "vtt": vtt}))
+                return
+        except Exception:
+            pass
+        results.put((index, None))
+
+    for index, (label, url) in enumerate(sources):
+        threading.Thread(target=fetch, args=(index, label, url), daemon=True).start()
+    got, deadline = {}, time.monotonic() + wait
+    while len(got) < len(sources):
+        left = deadline - time.monotonic()
+        if left <= 0:
+            break
+        try:
+            index, subtitle = results.get(timeout=left)
+        except queue.Empty:
+            break
+        got[index] = subtitle
+    return [got[index] for index in sorted(got) if got[index]]
 
 
 def extractor_options(profile=BROWSER_PROFILE):
@@ -224,7 +353,12 @@ def extract(url, max_height=DEFAULT_QUALITY):
 
     with yt_dlp.YoutubeDL(extractor_options()) as downloader:
         info = downloader.extract_info(url, download=False)
-    return select_formats(info, max_height)
+        video, audio = choose_formats(info, max_height)
+        # Fetched here, with the browser's cookies: YouTube answers the subtitle addresses alone with
+        # 429 or not at all, and nothing of the browser runs while the native player plays.
+        subtitles = fetch_subtitles(downloader, subtitle_sources(info))
+    return {"url": video["url"], "audio_url": audio["url"] if audio else "",
+            "audio_tracks": audio_choices(info, audio), "subtitles": subtitles}
 
 
 def main(argv):
@@ -273,12 +407,15 @@ def main(argv):
         if child.returncode != 0:
             return 3
         try:
-            video, audio = json.loads(data)
-        except (ValueError, TypeError):
+            found = json.loads(data)
+            request = {"url": str(found["url"]), "audio_url": str(found["audio_url"])}
+        except (ValueError, TypeError, KeyError):
             return 3
-        request = json.dumps({"url": video, "audio_url": audio or ""},
-                             separators=(",", ":")).encode() + b"\n"
-        if len(request) > 64 * 1024:
+        for key in ("audio_tracks", "subtitles"):
+            if found.get(key):
+                request[key] = found[key]
+        request = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
+        if len(request) > REQUEST_LIMIT:
             return 3
         # No shared framebuffer writer: native playback starts only after the
         # supervisor has reaped Xorg and the daemon invalidates its page caches.

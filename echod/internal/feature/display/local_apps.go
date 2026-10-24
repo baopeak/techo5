@@ -27,7 +27,10 @@ import (
 
 const browserLauncher = "/data/techo5-apps/bin/browser-session"
 const appPoll = 50 * time.Millisecond
-const browserVideoLimit = 64 << 10
+
+// browserVideoLimit bounds one handoff: addresses, and the subtitles carried with it (player.py's
+// REQUEST_LIMIT).
+const browserVideoLimit = 1 << 20
 
 // browserTrack is the name the browser's sound plays under.
 const browserTrack = "Local browser"
@@ -40,6 +43,25 @@ func init() { media.WaitOutQuiet(browserTrack) }
 type browserVideoRequest struct {
 	URL      string `json:"url"`
 	AudioURL string `json:"audio_url"`
+	// The other sounds (the first is audio_url's) and the subtitles the viewer may choose.
+	AudioTracks []browserChoice `json:"audio_tracks,omitempty"`
+	Subtitles   []browserChoice `json:"subtitles,omitempty"`
+}
+
+// browserChoice is a sound, by its address, or subtitles, carried as WebVTT: the browser fetched them
+// with its cookies, which nothing here has.
+type browserChoice struct {
+	Label string `json:"label"`
+	URL   string `json:"url,omitempty"`
+	VTT   string `json:"vtt,omitempty"`
+}
+
+func videoTracks(tracks []browserChoice) []video.Track {
+	out := make([]video.Track, 0, len(tracks))
+	for _, t := range tracks {
+		out = append(out, video.Track{Label: t.Label, URL: t.URL, Text: t.VTT})
+	}
+	return out
 }
 
 // One newline-terminated JSON frame is allowed per lease. Other launcher
@@ -59,7 +81,19 @@ func readBrowserVideo(r io.Reader) (browserVideoRequest, error) {
 	if dec.Decode(&extra) != io.EOF {
 		return browserVideoRequest{}, errors.New("invalid browser video request")
 	}
-	for i, raw := range []string{req.URL, req.AudioURL} {
+	addresses := []string{req.URL, req.AudioURL}
+	for _, t := range req.AudioTracks {
+		if t.VTT != "" {
+			return browserVideoRequest{}, errors.New("invalid browser video sound")
+		}
+		addresses = append(addresses, t.URL)
+	}
+	for _, t := range req.Subtitles {
+		if t.URL != "" || t.VTT == "" {
+			return browserVideoRequest{}, errors.New("invalid browser video subtitles")
+		}
+	}
+	for i, raw := range addresses {
 		if i == 1 && raw == "" {
 			continue
 		}
@@ -293,7 +327,8 @@ func (a *localApps) step(priority bool, now time.Time, wake func()) (bool, bool)
 				a.returnKind = ""
 				return false, false
 			}
-			id, err := video.Get().Play(video.Request{URL: req.URL, AudioURL: req.AudioURL, Title: "YouTube", Origin: video.FromLocalApp})
+			id, err := video.Get().Play(video.Request{URL: req.URL, AudioURL: req.AudioURL, Title: "YouTube", Origin: video.FromLocalApp,
+				AudioTracks: videoTracks(req.AudioTracks), Subtitles: videoTracks(req.Subtitles)})
 			a.nativeStarted(id, err)
 			return false, false
 		}
