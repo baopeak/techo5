@@ -95,6 +95,16 @@ class FormatTests(unittest.TestCase):
     def test_next_quality_cycles(self):
         self.assertEqual([next_quality(q) for q in QUALITIES], [480, 720, 360])
 
+    def test_original_audio_beats_auto_dubs_at_a_higher_bitrate(self):
+        # As YouTube lists a video with auto-dubs (0e3GPea1Tyg on crown, 2026-10-24).
+        dubs = [{**self.audio("140-%d" % n, bitrate=129.478), "language": lang, "language_preference": -1,
+                 "format_note": name + ", medium"}
+                for n, (lang, name) in enumerate([("ml", "Malayalam"), ("vi", "Vietnamese"), ("tr", "Turkish")])]
+        original = {**self.audio("140-23", bitrate=129.475), "language": "en-US", "language_preference": 10,
+                    "format_note": "English (US) original (default), medium"}
+        formats = [self.video("720", 720)] + dubs + [original, self.audio("opus-orig", "opus", 160)]
+        self.assertEqual(select_formats({"formats": formats})[1], "https://media.example/140-23")
+
     def test_muxed_audio_needs_no_extra_stream(self):
         self.assertEqual(select_formats({"formats": [self.video("muxed", 360, audio="mp4a.40.2")]}),
                          ("https://media.example/muxed", None))

@@ -112,6 +112,14 @@ def validate_url(value):
     return "https://www.youtube.com/watch?v=" + video_id
 
 
+def original_audio(item):
+    """Whether an audio format is the video's own sound rather than a dub YouTube added.
+
+    YouTube marks the original with language_preference 10 and "original" in its note; a video
+    without dubs marks nothing, and then no track is preferred for it."""
+    return (item.get("language_preference") or -1) >= 10 or "original" in str(item.get("format_note") or "")
+
+
 def select_formats(info, max_height=DEFAULT_QUALITY):
     """Choose software-decodable H.264 up to max_height and a compatible audio stream."""
     formats = info.get("formats", [])
@@ -142,8 +150,10 @@ def select_formats(info, max_height=DEFAULT_QUALITY):
         return chosen["url"], None
     if not audios:
         raise ValueError("No compatible audio")
-    # Prefer AAC for this CPU; Opus is supported when AAC is unavailable.
-    audio = max(audios, key=lambda item: (str(item.get("acodec")).startswith(("mp4a", "aac")),
+    # The original track first: YouTube adds auto-dubs at near-identical bitrates, so the best
+    # bitrate alone picked a dub at random. Then AAC for this CPU, Opus when AAC is unavailable.
+    audio = max(audios, key=lambda item: (original_audio(item),
+                                         str(item.get("acodec")).startswith(("mp4a", "aac")),
                                          item.get("abr") or item.get("tbr") or 0))
     return chosen["url"], audio["url"]
 
