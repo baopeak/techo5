@@ -16,12 +16,17 @@ import (
 // keyboardSocket serves one fake keyboard and returns its end, as the session's fd5 would be.
 func keyboardSocket(t *testing.T, dictate dictateFunc) (*os.File, *bufio.Reader, <-chan struct{}) {
 	t.Helper()
+	return keyboardSocketHolding(t, dictate, func(bool) {})
+}
+
+func keyboardSocketHolding(t *testing.T, dictate dictateFunc, hold func(bool)) (*os.File, *bufio.Reader, <-chan struct{}) {
+	t.Helper()
 	daemon, keyboard, err := newDictationPair()
 	if err != nil {
 		t.Fatal(err)
 	}
 	served := make(chan struct{})
-	go func() { defer close(served); serveDictation(daemon, dictate) }()
+	go func() { defer close(served); serveDictation(daemon, dictate, hold) }()
 	t.Cleanup(func() { keyboard.Close(); daemon.Close(); <-served })
 	return keyboard, bufio.NewReader(keyboard), served
 }
@@ -87,6 +92,39 @@ func TestDictationSocketWordsErrorsForTheKeyboard(t *testing.T) {
 		if got := readDictation(t, replies); got.Error != want || got.Text != "" {
 			t.Fatalf("%v answered %+v, want %s", err, got, want)
 		}
+	}
+}
+
+// The keyboard's full screen holds the wake words once however often it says so, lets them go when it
+// says windowed, and lets them go when its socket ends while it still held them.
+func TestKeyboardFullScreenHoldsTheWakeWordsUntilItEnds(t *testing.T) {
+	holds := make(chan bool, 8)
+	keyboard, _, served := keyboardSocketHolding(t, func(context.Context, <-chan struct{}) (string, error) { return "", nil },
+		func(on bool) { holds <- on })
+	next := func(want bool) {
+		t.Helper()
+		select {
+		case got := <-holds:
+			if got != want {
+				t.Fatalf("hold %v, want %v", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("no hold %v", want)
+		}
+	}
+	keyboard.Write([]byte("fullscreen\nfullscreen\n"))
+	next(true)
+	keyboard.Write([]byte("windowed\n"))
+	next(false)
+	keyboard.Write([]byte("fullscreen\n"))
+	next(true)
+	keyboard.Close()
+	next(false)
+	<-served
+	select {
+	case on := <-holds:
+		t.Fatalf("an extra hold %v", on)
+	default:
 	}
 }
 

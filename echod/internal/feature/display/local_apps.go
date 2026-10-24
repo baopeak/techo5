@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/HuskerMinion/techo5/echod/internal/feature/detect"
 	"github.com/HuskerMinion/techo5/echod/internal/feature/media"
 	"github.com/HuskerMinion/techo5/echod/internal/feature/phone"
 	"github.com/HuskerMinion/techo5/echod/internal/feature/setup"
@@ -412,7 +413,7 @@ func (a *localApps) step(priority bool, now time.Time, wake func()) (bool, bool)
 		_ = readyOutput.Close()
 		_ = dictationPeer.Close()
 		a.dictation = dictation
-		go serveDictation(dictation, xiaozhi.Get().Dictate)
+		go serveDictation(dictation, xiaozhi.Get().Dictate, detect.Get().HoldForScreen)
 		a.generation++
 		a.readReady(readyInput, wake)
 		a.activeURL, a.launchURL, a.launchPlay = a.launchURL, "", false

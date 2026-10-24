@@ -20,6 +20,10 @@ import (
 // the session. Only the keyboard inherits it, never the browser. It carries "listen" and "stop"
 // lines up and one JSON reply per listen down: the transcript, or an error code the keyboard
 // words for the person. The app root itself still has no microphone device.
+//
+// It also carries the keyboard's full screen: "fullscreen" while the browser fills the screen, which
+// holds the wake words down for the CPU, and "windowed" when it no longer does. The socket ending
+// lets them go too.
 
 type dictationReply struct {
 	Text  string `json:"text,omitempty"`
@@ -56,8 +60,15 @@ func dictationError(err error) string {
 }
 
 // serveDictation answers one keyboard until its socket ends; the owner closes conn. One listen runs
-// at a time, and a malformed or oversized line ends the conversation.
-func serveDictation(conn io.ReadWriter, dictate dictateFunc) {
+// at a time, and a malformed or oversized line ends the conversation. hold is the full screen's
+// hold on the wake words, released when the conversation ends however it ends.
+func serveDictation(conn io.ReadWriter, dictate dictateFunc, hold func(bool)) {
+	held := false
+	defer func() {
+		if held {
+			hold(false)
+		}
+	}()
 	ctx, cancel := context.WithCancel(context.Background())
 	var writes sync.Mutex
 	send := func(r dictationReply) {
@@ -73,7 +84,7 @@ func serveDictation(conn io.ReadWriter, dictate dictateFunc) {
 			<-done
 		}
 	}()
-	lines := bufio.NewReaderSize(conn, 16)
+	lines := bufio.NewReaderSize(conn, 16) // the longest line, "fullscreen\n", fits
 	for {
 		line, err := lines.ReadSlice('\n')
 		if err != nil {
@@ -110,6 +121,11 @@ func serveDictation(conn io.ReadWriter, dictate dictateFunc) {
 			if finish != nil {
 				close(finish)
 				finish = nil
+			}
+		case "fullscreen\n", "windowed\n":
+			if on := string(line) == "fullscreen\n"; on != held {
+				held = on
+				hold(on)
 			}
 		default:
 			return

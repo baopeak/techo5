@@ -35,7 +35,7 @@ The local player.py resolves streams via yt-dlp/QuickJS and hands H.264 up to
 the height on the quality button (360p/480p/720p, 720p by default, remembered
 in ~/.config/techo5/video-quality) to TECHO5's native framebuffer player.
 Lower heights save software-decode CPU and network on the Echo.
-Hủy mở video cancels a handoff that has not started yet. Resolution
+Hủy mở cancels a handoff that has not started yet. Resolution
 requires network access to YouTube, without cookies/account or disk downloads.
 Stream failures remain visible and do not close Firefox. SIGTERM also stops
 and reaps the player; session process-group ownership remains with the launcher.
@@ -167,6 +167,32 @@ def main():
     gi.require_version("GdkX11", "3.0")
     from gi.repository import Gdk, GdkX11, GLib, Gtk, Pango
 
+    class ExitHandle(Gtk.Window):
+        """Thoát, the one control left while the browser is full screen: an override-redirect window in
+        the top right corner, raised again every second because the full-screen browser raises itself."""
+
+        def __init__(self, on_exit):
+            super().__init__(type=Gtk.WindowType.POPUP)
+            self.set_accept_focus(False)
+            button = Gtk.Button(label="✕ Thoát")
+            button.set_can_focus(False)
+            button.connect("clicked", lambda unused: on_exit())
+            self.add(button)
+            self.set_default_size(150, 56)
+            self.show_all()
+            self.move(self.get_screen().get_width() - 158, 8)
+            self.raising = GLib.timeout_add_seconds(1, self.raise_up)
+
+        def raise_up(self):
+            window = self.get_window()
+            if window is not None:
+                window.raise_()
+            return True
+
+        def destroy(self):
+            GLib.source_remove(self.raising)
+            super().destroy()
+
     class Keyboard(Gtk.Window):
         def __init__(self):
             super().__init__(title="TECHO5 Bàn phím")
@@ -204,6 +230,8 @@ def main():
             self.reading_video = False
             self.video_request = 0
             self.quality = load_quality()
+            self.fullscreen = False
+            self.exit_handle = None
             self.closed = False
             self.screen = self.get_screen()
             self.width = self.screen.get_width()
@@ -236,12 +264,13 @@ def main():
             self.button("URL", lambda: self.send_keys("ctrl+l"), toolbar)
             self.button("Lùi", lambda: self.send_keys("alt+Left"), toolbar)
             self.button("Tiến", lambda: self.send_keys("alt+Right"), toolbar)
-            self.button("Cuộn lên", lambda: self.scroll_page(4), toolbar)
-            self.button("Cuộn xuống", lambda: self.scroll_page(5), toolbar)
+            self.button("▲ Lên", lambda: self.scroll_page(4), toolbar)
+            self.button("▼ Xuống", lambda: self.scroll_page(5), toolbar)
             self.button("Netflix", self.youtube, toolbar)
+            self.button("Toàn màn hình", self.enter_fullscreen, toolbar)
             self.secret_button = self.button("Ẩn chữ", self.toggle_secret, toolbar)
             self.play_button = self.button("Phát video", self.play_video, toolbar)
-            self.stop_button = self.button("Hủy mở video", self.stop_video, toolbar)
+            self.stop_button = self.button("Hủy mở", self.stop_video, toolbar)
             self.stop_button.set_sensitive(False)
             self.quality_button = self.button("%dp" % self.quality, self.cycle_quality, toolbar)
             native_youtube = (os.environ.get("TECHO5_APP_KIND", "youtube") == "youtube"
@@ -541,6 +570,39 @@ def main():
         def send_keys(self, key):
             self.browser_action([(["xdotool", "key", "--clearmodifiers", key], None)])
 
+        def enter_fullscreen(self):
+            """The browser over the whole panel (F11) with this dock hidden, so its reserved strip goes;
+            a small Thoát stays on top to come back. The daemon holds the wake words meanwhile, for
+            the CPU a film decoded in software needs."""
+            if self.fullscreen or self.closed:
+                return
+            self.fullscreen = True
+            self.send_keys("F11")
+            self.tell_daemon(b"fullscreen\n")
+            self.hide()
+            self.exit_handle = ExitHandle(self.exit_fullscreen)
+
+        def exit_fullscreen(self):
+            if not self.fullscreen or self.closed:
+                return
+            self.fullscreen = False
+            if self.exit_handle is not None:
+                self.exit_handle.destroy()
+                self.exit_handle = None
+            self.show()
+            GLib.idle_add(self.reserve_space)
+            self.send_keys("F11")
+            self.tell_daemon(b"windowed\n")
+
+        def tell_daemon(self, line):
+            """A line for the daemon over the keyboard's socket, when there is one."""
+            if self.dictation is None:
+                return
+            try:
+                self.dictation.send(line)
+            except OSError:
+                self.end_dictation()
+
         def scroll_page(self, wheel):
             # Wheel events target page content, not the focused search field.
             self.browser_action([
@@ -606,7 +668,7 @@ def main():
                     self.play_button.set_sensitive(True)
                     self.video_status.set_text("Hãy mở video youtube.com/watch hoặc youtu.be trước.")
                     return
-                self.start_player([url], "Đang lấy luồng YouTube… Hủy mở video để dừng.")
+                self.start_player([url], "Đang lấy luồng YouTube… Hủy mở để dừng.")
 
             def request():
                 if not self.closed and token == self.video_request and self.reading_video:
@@ -638,7 +700,7 @@ def main():
         def play_search(self, query):
             """Play the first YouTube result for query natively, as Phát video does for a page."""
             if not self.closed and self.player is None and not self.reading_video:
-                self.start_player(["--search", query], "Đang mở video đầu tiên trong kết quả… Hủy mở video để dừng.")
+                self.start_player(["--search", query], "Đang mở video đầu tiên trong kết quả… Hủy mở để dừng.")
             return False
 
         def start_player(self, target, status):
