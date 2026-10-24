@@ -577,7 +577,7 @@ def main():
             if self.fullscreen or self.closed:
                 return
             self.fullscreen = True
-            self.send_keys("F11")
+            self.sync_fullscreen()
             self.tell_daemon(b"fullscreen\n")
             self.hide()
             self.exit_handle = ExitHandle(self.exit_fullscreen)
@@ -591,8 +591,36 @@ def main():
                 self.exit_handle = None
             self.show()
             GLib.idle_add(self.reserve_space)
-            self.send_keys("F11")
+            self.sync_fullscreen()
             self.tell_daemon(b"windowed\n")
+
+        def sync_fullscreen(self, tries=3):
+            """Make the browser's real full screen match self.fullscreen. F11 toggles, and one sent
+            while Chromium is still changing state can be lost: a quick Toàn màn hình then Thoát left
+            it full screen over a keyboard that thought it was back. So the window's own state is
+            read, F11 is sent only when it differs, and it is read again until it agrees."""
+            want = self.fullscreen
+
+            def found(output):
+                windows = [line for line in output.splitlines() if line.isdecimal()]
+                if not windows:
+                    return
+                window = windows[-1]
+
+                def checked(state):
+                    if self.closed or want != self.fullscreen:
+                        return  # a later press has its own check
+                    if ("_NET_WM_STATE_FULLSCREEN" in state) == want:
+                        return
+                    self.queue.extendleft(reversed([
+                        (["xdotool", "windowactivate", "--sync", window], None),
+                        (["xdotool", "key", "--clearmodifiers", "F11"], None)]))
+                    if tries > 1:
+                        GLib.timeout_add(1500, lambda: self.sync_fullscreen(tries - 1) and False)
+
+                self.queue.appendleft((["xprop", "-id", window, "_NET_WM_STATE"], checked))
+            self.enqueue([(["xdotool", "search", "--onlyvisible", "--class",
+                            os.environ.get("TECHO5_BROWSER_CLASS", "firefox")], found)])
 
         def tell_daemon(self, line):
             """A line for the daemon over the keyboard's socket, when there is one."""
