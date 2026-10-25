@@ -54,6 +54,33 @@ func TestVideoSeekTargetsAreDisjointAndVODOnly(t *testing.T) {
 	}
 }
 
+// With the controls gone, -10s and +10s still answer where they were drawn, and nothing else does:
+// a second tap on +10s after the controls timed out only brought them back.
+func TestVideoSeekButtonsAnswerWithControlsGone(t *testing.T) {
+	for _, size := range []image.Point{{showWide, showHigh}, {show8Wide, show8High}} {
+		r := newRenderer(image.NewRGBA(image.Rectangle{Max: size}))
+		st := video.State{Phase: video.Playing, ID: 1, Frames: true, Dur: 100 * time.Second}
+		r.videoPage(scene{video: st, showVideo: true, videoLive: true, videoControls: true})
+		backward, forward := r.videoSeekButtons()
+		r.videoPage(scene{video: st, showVideo: true, videoLive: true})
+		center := func(z image.Rectangle) image.Point { return z.Min.Add(image.Pt(z.Dx()/2, z.Dy()/2)) }
+		if got := r.videoTapped(center(forward)); got != videoTapNone {
+			t.Fatalf("%v: hidden controls kept their zones: %v", size, got)
+		}
+		for want, zone := range map[videoTap]image.Rectangle{videoTapBackward: backward, videoTapForward: forward} {
+			if got := r.videoSeekTapped(center(zone)); got != want {
+				t.Fatalf("%v: seek tap at %v = %v, want %v", size, center(zone), got, want)
+			}
+		}
+		play, stop, quieter, louder := r.videoButtons()
+		for _, zone := range []image.Rectangle{play, stop, quieter, louder, r.videoTimeline(), r.dst.Rect} {
+			if got := r.videoSeekTapped(center(zone)); got != videoTapNone {
+				t.Fatalf("%v: %v answered as a seek: %v", size, zone, got)
+			}
+		}
+	}
+}
+
 // The sound and subtitle buttons sit in the bottom row, clear of every other control, and what the
 // panel blends over each frame stays the strip: blending a box from them to the strip took a video
 // from 24 fps to 6. A subtitle line drawn while the controls are up only adds the band above them.

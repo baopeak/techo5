@@ -58,6 +58,18 @@ func (r *renderer) videoTrackButtons() (audio, subtitle image.Rectangle) {
 	return centered(stop.Max.X, backward.Min.X), centered(forward.Max.X, quieter.Min.X)
 }
 
+// videoSeekTapped is whether a tap landed on -10s or +10s where they sit, drawn or not.
+func (r *renderer) videoSeekTapped(at image.Point) videoTap {
+	backward, forward := r.videoSeekButtons()
+	switch {
+	case at.In(backward):
+		return videoTapBackward
+	case at.In(forward):
+		return videoTapForward
+	}
+	return videoTapNone
+}
+
 func (r *renderer) videoTimeline() image.Rectangle {
 	return image.Rect(r.margin, r.h-r.s(176), r.w-r.margin, r.h-r.s(128))
 }

@@ -115,6 +115,12 @@ func (d *Display) videoGesture(g touch.Gesture) {
 		st := video.Get().State()
 		controls := shown || st.Phase == video.Paused || st.Phase == video.Loading || !st.Frames
 		if !controls {
+			// -10s and +10s skip at once even with the controls gone: they go a few seconds after a tap,
+			// and a finger going back to +10s for another jump only brought them up again. A skip is
+			// undone by the other button; the rest still need the controls up first.
+			if tapped := d.r.videoSeekTapped(image.Pt(g.X, g.Y)); tapped != videoTapNone && st.Dur > 0 {
+				d.skipVideo(st.ID, tapped)
+			}
 			d.showVideoControls()
 			return
 		}
@@ -132,11 +138,7 @@ func (d *Display) videoGesture(g touch.Gesture) {
 			go media.Get().Adjust(+1)
 			d.showVideoControls()
 		case videoTapBackward, videoTapForward:
-			by := -10 * time.Second
-			if tapped == videoTapForward {
-				by = 10 * time.Second
-			}
-			video.Get().SkipIDAsync(st.ID, by)
+			d.skipVideo(st.ID, tapped)
 			d.showVideoControls()
 		case videoTapTimeline:
 			at := d.r.videoSeekPosition(g.X, st.Dur)
@@ -170,6 +172,15 @@ func (d *Display) videoGesture(g touch.Gesture) {
 			d.mu.Unlock()
 		}
 	}
+}
+
+// skipVideo moves the video 10 s back for -10s, or on for +10s.
+func (d *Display) skipVideo(id uint64, tapped videoTap) {
+	by := -10 * time.Second
+	if tapped == videoTapForward {
+		by = 10 * time.Second
+	}
+	video.Get().SkipIDAsync(id, by)
 }
 
 func (d *Display) showVideoControls() {
