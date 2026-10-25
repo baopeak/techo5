@@ -1,5 +1,6 @@
 // Package video plays a video full screen on the Show: an address from Home Assistant's play_video
-// action, or from a DLNA controller while DLNA video is on (docs/video.md, docs/cast-plan.md).
+// action, a DLNA controller while DLNA video is on, or a local app handing off the screen
+// (docs/video.md, docs/cast-plan.md).
 //
 // The daemon does not decode video itself. ffmpeg does, as a child process: the image carries a small
 // build of it (tools/linux/build-ffmpeg.sh) that knows the network and the common formats and nothing
@@ -10,6 +11,9 @@
 // the speaker" work as they do for music; the picture follows the sound, each frame shown when the
 // sound reaches it and dropped when a later one is already due. The display owns the screen and
 // paints the frames (feature/display, hardware/screen).
+// A request may supply a separate audio address. Both inputs are validated and probed under the same
+// network guard; the picture retains its timing and shape, while sound is selected from the second
+// input. Without a separate address the original single-input behavior is unchanged.
 //
 // The Show and the Spot (whose round face has a layout of its own, in feature/display). The Dot has no
 // screen: there the package says it is not here, and DLNA offers no video.

@@ -45,6 +45,16 @@ data:
 `stop_video`, `pause_video` and `resume_video` do what they say. The **Video state** sensor says
 `idle`, `asking`, `loading`, `playing` or `paused`, and **Video title** names what's playing.
 
+On the encrypted ESPHome API, `seek_video` takes an absolute integer `seconds` position (for example,
+`seconds: 90` moves to 1:30). Seeking requires a known video duration; live streams and streams with
+unknown duration are refused. Positions are clamped far enough before the end to decode a final frame,
+and seeking keeps a paused video paused. If music starts while a seek is reloading, that newer audio
+wins; the delayed video decoder does not take the speaker back.
+A seek can reach a silent final picture after a separately supplied audio stream has ended. This is
+accepted only after that same video's audio has previously supplied PCM, and only with decoded
+picture and a clean decoder exit. A paused final picture stays paused until Resume or Stop; a new
+video with empty separate audio, or a decoder/network failure, still fails rather than playing silently.
+
 `play_video` answers as soon as the video starts loading. One that turns out not to play (the
 server says no, the file is HEVC, the connection drops) says why on the screen for a few seconds and
 in the **Video error** sensor, which clears once a video plays; it isn't an error on the action.
@@ -78,12 +88,19 @@ for that long asks again (a phone's address on your network can go to another de
 section on the setup page lists them with the day each was last used. To make every address ask
 again, tick **Forget the … addresses** and **Save**.
 
-Play, pause, stop and the volume work from the app. Seeking doesn't, yet.
+Play, pause, stop and the volume work from the DLNA app. DLNA seeking is not supported; use the Show's
+controls or Home Assistant's `seek_video` action for videos with a known duration.
 
 ## On the screen
 
 - **Tap** shows the controls for a few seconds: play or pause, stop, quieter and louder, with the
   title and the time. On the Spot they're across the bottom of the circle.
+- On the Show, a video with a known duration also has a **tap-to-seek timeline** and labeled
+  **-10s / +10s** buttons. **Swipe left / right** skips backward / forward ten seconds, even when
+  the controls are hidden. Rapid taps and skips are applied in their input order. The timeline is not
+  a continuous drag control. Live streams do not offer
+  seeking. A seek reloads the decoder without ending the video or returning a local app's browser;
+  Stop or the video's actual end returns normally.
 - **Swipe down**, or **Stop**, ends the video. The screen goes back to where it was.
 - A call, an alarm or a timer ringing, the settings, a camera or a voice turn goes on top. The video
   pauses under it and goes on once it's gone.

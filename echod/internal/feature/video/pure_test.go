@@ -79,11 +79,22 @@ func TestTheLogNeverHasTheSecrets(t *testing.T) {
 	if strings.Contains(r, "secret") || strings.Contains(r, "token") || strings.Contains(r, "user") {
 		t.Errorf("redacted: %s", r)
 	}
-	if !strings.Contains(r, "192.168.1.20:8096/Videos/1/stream.mp4") {
-		t.Errorf("redacted too much: %s", r)
-	}
 	if Host(u) != "192.168.1.20" {
 		t.Errorf("host %q", Host(u))
+	}
+}
+
+func TestSignedMediaPathsDoNotReachLogs(t *testing.T) {
+	u, err := CheckURL("https://secret_user:secret_password@cdn.example.com/api/manifest/secret_path/signature/secret_signature/playlist.m3u8?token=secret_query#secret_fragment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	redacted := Redacted(u)
+	if strings.Contains(redacted, "secret_") || strings.Contains(redacted, "manifest") {
+		t.Fatalf("signed media data escaped into diagnostics: %s", redacted)
+	}
+	if !strings.Contains(redacted, "cdn.example.com") {
+		t.Fatalf("diagnostic origin was lost: %s", redacted)
 	}
 }
 
@@ -352,4 +363,78 @@ func TestTheDecoderArguments(t *testing.T) {
 		slices.Index(p, "-max_pixels") < 0 {
 		t.Errorf("probe: %q", p)
 	}
+}
+
+// A stream past 30 frames a second is shown at half its rate, so the decoder may skip the frames
+// nothing references and the deblocking: 720p60 went from slower than real time to about 2.2x on a
+// Show 8 (decode plus panel filter, measured on the device). The shortcuts name the video decoder
+// only, so the sound decoder of the same input is not handed an option it would refuse.
+func TestHighFrameRatesSkipWorkThePanelCannotShow(t *testing.T) {
+	info, _ := ParseProbe(probeMP4)
+	for _, c := range []struct {
+		fps  float64
+		skip bool
+	}{{60, true}, {59.94, true}, {50, true}, {30, false}, {29.97, false}, {24, false}, {0, false}} {
+		info.FPS = c.fps
+		a := DecodeArgs(Decoding{URL: "https://media.example.com/v.mp4", Info: info, Screen: Screen{W: 1280, H: 800}})
+		input := slices.Index(a, "-i")
+		frame, loop := slices.Index(a, "-skip_frame:v"), slices.Index(a, "-skip_loop_filter:v")
+		if !c.skip {
+			if frame >= 0 || loop >= 0 {
+				t.Errorf("%v fps skips decoding: %q", c.fps, a)
+			}
+			continue
+		}
+		if frame < 0 || loop < 0 || a[frame+1] != "noref" || a[loop+1] != "all" || frame > input || loop > input {
+			t.Errorf("%v fps: want video-only skips before the input, got %q", c.fps, a)
+		}
+	}
+}
+
+func TestSeekOffsetsBothInputsWithoutChangingOutputTimebase(t *testing.T) {
+	info, err := ParseProbe(probeMP4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, separate := range []string{"", "https://cdn.example.com/audio"} {
+		d := Decoding{URL: "https://cdn.example.com/video", AudioURL: separate, Info: info, Screen: Screen{W: 1280, H: 800}, Offset: 12345 * time.Millisecond}
+		args := DecodeArgs(d)
+		inputs, seeks := 0, 0
+		for i, arg := range args {
+			if arg == "-ss" {
+				seeks++
+				if args[i+1] != "12.345000" {
+					t.Fatalf("seek precision lost: %q", args)
+				}
+			}
+			if arg == "-i" {
+				inputs++
+				if i < 2 || args[i-2] != "-ss" || args[i-1] != "12.345000" {
+					t.Fatalf("input not sought equally: %q", args)
+				}
+			}
+		}
+		if seeks != inputs || inputs != 1+boolInt(separate != "") {
+			t.Fatalf("offset count: %d seeks, %d inputs", seeks, inputs)
+		}
+		if !slices.Contains(args, Filter(info, d.Screen)) || !slices.Contains(args, soundFilter) {
+			t.Fatal("seek changed zero-based frame/audio filters")
+		}
+		for _, option := range []string{"-copyts", "-noaccurate_seek", "-seek_timestamp"} {
+			if slices.Contains(args, option) {
+				t.Fatalf("seek retained input timestamps or disabled accurate decoding: %q", args)
+			}
+		}
+		d.Offset = 0
+		if slices.Contains(DecodeArgs(d), "-ss") {
+			t.Fatal("normal/live decode gained a seek")
+		}
+	}
+}
+
+func boolInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }

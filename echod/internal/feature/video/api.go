@@ -16,16 +16,33 @@ const (
 	// FromDLNA is a DLNA controller, which anybody on the network can be: the first video from an
 	// address asks on the screen first.
 	FromDLNA
+
+	// FromLocalApp is a locally launched app handing playback to the native player.
+	FromLocalApp
 )
 
 // Request is a video to play.
 type Request struct {
-	URL   string
-	Title string
+	URL      string
+	AudioURL string // optional separate sound input; otherwise URL supplies both streams
+	Title    string
+
+	// AudioTracks are the sounds the viewer may switch between, the first the one AudioURL plays;
+	// Subtitles are WebVTT texts the viewer may show (tracks.go). Both are optional.
+	AudioTracks []Track
+	Subtitles   []Track
 
 	Origin Origin
 	// From is the address that asked, for a DLNA controller: what the screen names and remembers.
 	From string
+}
+
+// Track is one sound or subtitle choice: what the screen names it, and a sound's address or the
+// subtitles' WebVTT text.
+type Track struct {
+	Label string
+	URL   string
+	Text  string
 }
 
 // Phase is what the player is doing, as Home Assistant's Video sensor says it.
@@ -42,18 +59,29 @@ const (
 // State is the player now.
 type State struct {
 	Phase Phase
-	// ID is the video's: each request gets a new one, so a controller can tell its own from the next.
+	// ID belongs to the playback request, not its decoder: seeking retains it.
 	ID     uint64
 	Title  string
 	Host   string
 	Origin Origin
 	From   string
 
-	// Pos is how far into the video it is, Dur how long it runs (0 when it does not say).
+	// LastID is the last playback request actually begun, retained across seeks and while idle;
+	// pending DLNA asks do not change it.
+	LastID uint64
+
+	// Pos is the absolute video position (seek offset plus elapsed playback); Dur is its duration,
+	// or zero when unknown. Only known-duration videos support seeking.
 	Pos, Dur time.Duration
 
 	// Frames is whether the picture has begun to arrive.
 	Frames bool
+
+	// AudioTracks and Subtitles name the video's choices; Audio is the sound playing, Subtitle the
+	// subtitles shown (-1: none), and Caption their line due now.
+	AudioTracks, Subtitles []string
+	Audio, Subtitle        int
+	Caption                string
 
 	// AskID is the DLNA video whose question is on the screen, when there is one: while another video
 	// plays, the state is that video's, and this is how the one asking knows it is still asked about.
@@ -85,6 +113,10 @@ var (
 	ErrBusy = errors.New("video: the screen is asking about another video")
 	// ErrNotInstalled is an image without the decoder.
 	ErrNotInstalled = errors.New("video: this image has no video decoder")
+	// ErrNotSeekable is a stream with no known VOD duration.
+	ErrNotSeekable = errors.New("video: seeking requires a known video duration")
+	// ErrNoVideo is a seek whose video is no longer current.
+	ErrNoVideo = errors.New("video: that video is no longer playing")
 )
 
 // DLNAProtocols are what the DLNA renderer adds to its sink protocols while DLNA video is on.

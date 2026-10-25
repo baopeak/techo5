@@ -68,6 +68,9 @@ func (d *Display) videoNext(now time.Time) time.Duration {
 	until := d.videoUntil
 	d.mu.Unlock()
 	wait := videoRecheck
+	if video.Get().State().Subtitle >= 0 {
+		wait = videoCaptionRecheck // a subtitle line changes within this of when it is due
+	}
 	if left := until.Sub(now); left > 0 && left < wait {
 		wait = left + 10*time.Millisecond // the controls go when they are due to
 	}
@@ -97,6 +100,14 @@ func (d *Display) videoGesture(g touch.Gesture) {
 		go video.Get().Stop()
 	case touch.SwipeUp:
 		d.showVideoControls()
+	case touch.SwipeLeft, touch.SwipeRight:
+		st := video.Get().State()
+		by := -10 * time.Second
+		if g.Kind == touch.SwipeRight {
+			by = 10 * time.Second
+		}
+		video.Get().SkipIDAsync(st.ID, by)
+		d.showVideoControls()
 	case touch.Tap:
 		d.mu.Lock()
 		shown := time.Now().Before(d.videoUntil)
@@ -104,10 +115,16 @@ func (d *Display) videoGesture(g touch.Gesture) {
 		st := video.Get().State()
 		controls := shown || st.Phase == video.Paused || st.Phase == video.Loading || !st.Frames
 		if !controls {
+			// -10s and +10s skip at once even with the controls gone: they go a few seconds after a tap,
+			// and a finger going back to +10s for another jump only brought them up again. A skip is
+			// undone by the other button; the rest still need the controls up first.
+			if tapped := d.r.videoSeekTapped(image.Pt(g.X, g.Y)); tapped != videoTapNone && st.Dur > 0 {
+				d.skipVideo(st.ID, tapped)
+			}
 			d.showVideoControls()
 			return
 		}
-		switch d.r.videoTapped(image.Pt(g.X, g.Y)) {
+		switch tapped := d.r.videoTapped(image.Pt(g.X, g.Y)); tapped {
 		case videoTapPlay:
 			go video.Get().Toggle()
 			d.showVideoControls()
@@ -120,6 +137,34 @@ func (d *Display) videoGesture(g touch.Gesture) {
 		case videoTapLouder:
 			go media.Get().Adjust(+1)
 			d.showVideoControls()
+		case videoTapBackward, videoTapForward:
+			d.skipVideo(st.ID, tapped)
+			d.showVideoControls()
+		case videoTapTimeline:
+			at := d.r.videoSeekPosition(g.X, st.Dur)
+			video.Get().SeekIDAsync(st.ID, at)
+			d.showVideoControls()
+		case videoTapAudio:
+			if n := len(st.AudioTracks); n > 1 {
+				next := (st.Audio + 1) % n
+				slog.Info("screen: video sound switched", "to", next, "of", n)
+				go func() {
+					if err := video.Get().SwitchAudioID(st.ID, next); err != nil {
+						slog.Warn("screen: video sound switch failed", "err", err)
+					}
+				}()
+			}
+			d.showVideoControls()
+		case videoTapSubtitle:
+			if n := len(st.Subtitles); n > 0 {
+				next := st.Subtitle + 1
+				if next >= n {
+					next = -1
+				}
+				slog.Info("screen: video subtitles switched", "to", next, "of", n)
+				go video.Get().SetSubtitleID(st.ID, next)
+			}
+			d.showVideoControls()
 		default:
 			// Off the controls: they go, and the picture is the whole screen again.
 			d.mu.Lock()
@@ -127,6 +172,15 @@ func (d *Display) videoGesture(g touch.Gesture) {
 			d.mu.Unlock()
 		}
 	}
+}
+
+// skipVideo moves the video 10 s back for -10s, or on for +10s.
+func (d *Display) skipVideo(id uint64, tapped videoTap) {
+	by := -10 * time.Second
+	if tapped == videoTapForward {
+		by = 10 * time.Second
+	}
+	video.Get().SkipIDAsync(id, by)
 }
 
 func (d *Display) showVideoControls() {
