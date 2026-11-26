@@ -377,10 +377,18 @@ func (m *Stream) markLive(url string) bool {
 
 // start makes a track the one being played, dropping whatever was.
 func (m *Stream) start(t *track) (*track, context.Context) {
+	return m.startAt(t, 0)
+}
+
+// startAt conditionally hands over a reserved request; zero is an unconditional new request.
+func (m *Stream) startAt(t *track, expected uint64) (*track, context.Context) {
+	m.mu.Lock()
+	if expected != 0 && m.asks != expected {
+		m.mu.Unlock()
+		return nil, nil
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.cancel = cancel
-
-	m.mu.Lock()
 	m.asks++
 	t.ask = m.asks
 	previous := m.track
@@ -413,13 +421,15 @@ func (m *Stream) Pause() { m.pause(false) }
 // the listener already paused stays the listener's pause.
 func (m *Stream) senderPause() { m.pause(true) }
 
-func (m *Stream) pause(bySender bool) {
+func (m *Stream) pause(bySender bool) { m.pauseIf(bySender, nil) }
+
+func (m *Stream) pauseIf(bySender bool, ok func(*track) bool) {
 	if m == nil {
 		return
 	}
 
 	m.mu.Lock()
-	if m.track == nil || m.paused {
+	if m.track == nil || m.paused || (ok != nil && !ok(m.track)) {
 		m.mu.Unlock()
 		return
 	}
@@ -484,17 +494,24 @@ func (m *Stream) stopPaused(name string) bool {
 // stopIf ends the track if ok, given it (nil with none loaded) and whether it is paused, says so, and
 // says whether it did; a nil ok ends it whatever it is.
 func (m *Stream) stopIf(ok func(t *track, paused bool) bool) bool {
+	stopped, _ := m.stopIfGeneration(ok)
+	return stopped
+}
+
+// stopIfGeneration returns the request generation atomically with stopping the track.
+func (m *Stream) stopIfGeneration(ok func(t *track, paused bool) bool) (bool, uint64) {
 	if m == nil {
-		return false
+		return false, 0
 	}
 
 	m.mu.Lock()
 	t := m.track
 	if ok != nil && !ok(t, m.paused) {
 		m.mu.Unlock()
-		return false
+		return false, 0
 	}
 	m.asks++
+	generation := m.asks
 	m.track, m.paused, m.bySender, m.rewind = nil, false, false, nil
 	m.forget()
 	m.unblock()
@@ -503,12 +520,12 @@ func (m *Stream) stopIf(ok func(t *track, paused bool) bool) bool {
 	m.bg.Gave(m)
 
 	if t == nil {
-		return false
+		return false, generation
 	}
 	t.stop()
 	m.flush()
 	m.changed()
-	return true
+	return true, generation
 }
 
 // Suspend implements speaker.Background: something else wants the speaker.

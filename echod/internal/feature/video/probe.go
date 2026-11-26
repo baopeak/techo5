@@ -25,7 +25,7 @@ type Info struct {
 	Rotation int
 
 	// VideoIndex and AudioIndex are the streams to decode, counted among the streams of their own
-	// kind (ffmpeg's 0:v:N and 0:a:N); AudioIndex is -1 when there is no sound to play.
+	// kind (ffmpeg's input:v:N and input:a:N); AudioIndex is -1 when there is no sound to play.
 	VideoIndex, AudioIndex int
 
 	// VideoCodec and AudioCodec are their codecs, for the log.
@@ -59,6 +59,11 @@ const most = 720
 // ParseProbe reads what `ffmpeg -i <address>` printed about the input: the best picture to decode
 // (the largest at most 720 rows, or else the smallest), the sound beside it, and the rest of Info.
 func ParseProbe(out string) (Info, error) {
+	return parseProbe(out, false)
+}
+
+// parseProbe also handles an explicitly separate sound input, which need not contain a picture.
+func parseProbe(out string, audioOnly bool) (Info, error) {
 	info := Info{VideoIndex: -1, AudioIndex: -1, SARNum: 1, SARDen: 1}
 	type videoStream struct {
 		idx, n        int // its place among video streams, and among all streams
@@ -143,6 +148,18 @@ func ParseProbe(out string) (Info, error) {
 			lastVideo = -1
 		}
 		n++
+	}
+	if audioOnly {
+		for _, a := range auds {
+			if audioCodecs[a.codec] {
+				info.AudioIndex, info.AudioCodec = a.idx, a.codec
+				return info, nil
+			}
+		}
+		if problem != "" {
+			return info, errors.New(problem)
+		}
+		return info, errors.New("there is no decodable audio in it")
 	}
 
 	best := -1

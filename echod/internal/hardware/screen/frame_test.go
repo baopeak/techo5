@@ -79,6 +79,26 @@ func TestAPageAFrameWentOnIsDrawnWholeNextTime(t *testing.T) {
 	}
 }
 
+func TestExternalOwnerInvalidatesEveryFramebufferPage(t *testing.T) {
+	d, dst := fake([4]uint{16, 8, 0, 24})
+	rand.New(rand.NewSource(4)).Read(d.canvas.Pix)
+	d.rotate(dst, 0)
+	want := append([]byte(nil), dst...)
+	clear(dst) // An external Xorg wrote the panel behind the native shadow cache.
+	d.pages = 2
+	d.InvalidateFrames()
+	if len(d.stale) != 2 || !d.stale[0] || !d.stale[1] {
+		t.Fatal("not every framebuffer page was invalidated")
+	}
+	d.rotate(dst, 0)
+	if !bytes.Equal(dst, want) {
+		t.Fatal("unchanged native canvas was not repainted over external pixels")
+	}
+	if !d.stale[1] {
+		t.Fatal("painting one page cleared another page's invalidation")
+	}
+}
+
 func TestAShortFrameIsRefused(t *testing.T) {
 	d, dst := fake([4]uint{16, 8, 0, 24})
 	if err := d.paintFrame(dst, 0, make([]byte, 100), image.Rectangle{}); err == nil {

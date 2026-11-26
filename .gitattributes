@@ -8,6 +8,7 @@ tools/linux/slotctl text eol=lf
 tools/linux/readmisc.sh text eol=lf
 tools/linux/rootfs/** text eol=lf
 tools/linux/athena/** text eol=lf
+tools/linux/apps/** text eol=lf
 tools/linux/*.txt text eol=lf
 tools/linux/*.patch text eol=lf
 tools/*.sh text eol=lf

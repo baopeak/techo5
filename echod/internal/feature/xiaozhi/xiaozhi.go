@@ -148,6 +148,12 @@ type Feature struct {
 	turn     *turn
 	response responseWait
 
+	// quiet is set by a dictation turn and cleared by the next turn that is not one: the words
+	// were typed, so whatever the cloud says or calls in reply to them is not wanted. dictation is
+	// where the transcript goes, nil once it has been delivered.
+	quiet     bool
+	dictation chan string
+
 	// down is the speaking direction of the current session, and the only way anything in this file
 	// can make a sound. It is here rather than being made where it is used so that Stop has
 	// something to reach: silencing the device has to work when there is no turn to cancel, because
@@ -549,7 +555,7 @@ func (f *Feature) hold(ctx context.Context) error {
 	// A turn belonged to the socket that just went. Ending it here rather than letting its next
 	// write discover the fact is what stops a dropped session from leaving the microphone open for
 	// as long as the reconnect takes.
-	f.Stop()
+	f.stop()
 	// No new turn can open until this owner installs another session. Clear
 	// the old response here even if capture had already finished before EOF.
 	finishScreen(false)
@@ -627,6 +633,9 @@ func (f *Feature) onEvent(e Event, down *downlink) {
 		f.response.observe(e, time.Now())
 	}
 	f.mu.Unlock()
+	if f.quietEvent(e) {
+		return
+	}
 	switch e.Type {
 	case TypeSTT:
 		slog.Info("xiaozhi: transcript", "text", e.Text)
@@ -707,6 +716,8 @@ func (f *Feature) speech(s *Speech) {
 	// Snapshot before publishing completion: a new explicit wake may rearm
 	// the conversation while listeners receive the old answer's completion.
 	ended := f.conversationEnded.Load()
+	handoffEpoch := appHandoffEpoch.Load()
+	handoffAccepted := appHandoffPending.Load()
 	slog.Info("xiaozhi: speech ended",
 		"speech", s.ID, "state", s.State,
 		"packets", s.Packets, "bytes", s.Bytes, "seconds", s.Seconds, "kbps", s.Kbps,
@@ -725,8 +736,8 @@ func (f *Feature) speech(s *Speech) {
 		answered.mu.Lock()
 		fn := answered.fn
 		answered.mu.Unlock()
-		if fn != nil {
-			safe.Go("xiaozhi follow-up", fn)
+		if fn != nil && !handoffAccepted {
+			safe.Go("xiaozhi follow-up", func() { runAnswerFollowUp(handoffEpoch, fn) })
 		}
 	}
 }

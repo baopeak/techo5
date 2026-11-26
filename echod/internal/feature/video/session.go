@@ -45,16 +45,18 @@ type Frame struct {
 
 // session is one video, from the request to its end.
 type session struct {
-	id      uint64
-	req     Request
-	u       *url.URL
-	ctx     context.Context
-	cancel  context.CancelFunc
-	screen  Screen
-	panelW  int
-	panelH  int
-	ended   func(s *session, err error, itself bool)
-	changed func()
+	id         uint64
+	req        Request
+	offset     time.Duration       // absolute VOD position at this decoder's relative time zero
+	audioLease media.ReceivedLease // retained through reloads; never recaptured after a seek delay
+	u          *url.URL
+	ctx        context.Context
+	cancel     context.CancelFunc
+	screen     Screen
+	panelW     int
+	panelH     int
+	ended      func(s *session, err error, itself bool)
+	changed    func()
 
 	// pauses is held through setPaused and through the sound's handover (soundSource.begin), so a pause
 	// or a resume never lands between the track becoming the clock and a pause held until then reaching
@@ -79,16 +81,20 @@ type session struct {
 	// The clock. With sound, it is how far the room has heard (media.Player.Heard) until the sound runs
 	// out, and the wall clock from there; without, the wall clock alone. wallBase is where the wall
 	// clock was when it last started or stopped, wallFrom when it started (zero while it is stopped).
-	sound      bool
-	src        *soundSource
-	soundIn    bool // the sound's pipe has ended
-	soundGone  bool // the speaker was taken from it: the video is over
-	wallBase   time.Duration
-	wallFrom   time.Time
-	wallPaused bool // a video with no sound, or with its sound run out, paused
-	lastHeard  time.Duration
-	lastClock  time.Duration // the wall clock's last answer: it does not go back
-	lastMove   time.Time     // when the clock last moved, for stuckFor
+	sound          bool
+	src            *soundSource
+	soundIn        bool  // the sound's pipe has ended
+	soundErr       error // explicitly separate sound ended without supplying any PCM
+	audioValidated bool  // actual PCM decoded from this request's separate audio, retained by seeks only
+	audioIndex     int   // which of req.AudioTracks AudioURL is, retained by seeks
+	silentTail     bool  // a previously validated seek reached audio EOF before any output PCM
+	soundGone      bool  // the speaker was taken from it: the video is over
+	wallBase       time.Duration
+	wallFrom       time.Time
+	wallPaused     bool // a video with no sound, or with its sound run out, paused
+	lastHeard      time.Duration
+	lastClock      time.Duration // the wall clock's last answer: it does not go back
+	lastMove       time.Time     // when the clock last moved, for stuckFor
 }
 
 func newSession(id uint64, req Request, u *url.URL, scr Screen, panelW, panelH int) *session {
@@ -125,6 +131,9 @@ func (s *session) run(insecure bool) {
 	s.cancel()
 	s.mu.Lock()
 	dec := s.dec
+	if s.soundErr != nil {
+		err, itself = s.soundErr, false
+	}
 	s.videoIn = true
 	// The frames go with the session: some 22 MB, which nothing reads again. A frame the screen still
 	// has comes back to a list nobody takes from, and goes with it.
@@ -159,9 +168,22 @@ func (s *session) stop(quiet bool) {
 	}
 	soundTurns.Lock()
 	defer soundTurns.Unlock()
-	if started := src.end(); quiet && started && media.Get().Receiving() == TrackName {
-		media.Get().Stop()
+	if started := src.end(); quiet && started {
+		src.track.Stop()
 	}
+}
+
+// stopForSeek atomically retires our sound and carries its request ownership into the reload.
+func (s *session) stopForSeek() media.ReceivedLease {
+	s.cancel()
+	soundTurns.Lock()
+	defer soundTurns.Unlock()
+	if src := s.sound0(); src != nil {
+		if src.end() {
+			return src.track.ReleaseForReplacement()
+		}
+	}
+	return s.audioLease
 }
 
 func (s *session) play(insecure bool) (error, bool) {
@@ -172,12 +194,27 @@ func (s *session) play(insecure bool) (error, bool) {
 	if err != nil {
 		return err, false
 	}
-	info, err := probe(s.ctx, s.u.String(), insecure, proxy)
+	s.mu.Lock()
+	info, cached := s.info, s.rate.Num > 0
+	s.mu.Unlock()
+	if !cached {
+		info, err = probe(s.ctx, s.u.String(), insecure, proxy)
+	}
 	if s.ctx.Err() != nil {
 		return nil, false
 	}
 	if err != nil {
 		return err, false
+	}
+	if !cached && s.req.AudioURL != "" {
+		audio, err := probeMedia(s.ctx, s.req.AudioURL, insecure, proxy, true)
+		if s.ctx.Err() != nil {
+			return nil, false
+		}
+		if err != nil {
+			return err, false
+		}
+		info.AudioIndex, info.AudioCodec = audio.AudioIndex, audio.AudioCodec
 	}
 	s.mu.Lock()
 	s.info, s.rate = info, FrameRate(info.FPS)
@@ -190,7 +227,7 @@ func (s *session) play(insecure bool) (error, bool) {
 		"probed in", time.Since(began).Round(time.Millisecond))
 	s.changed()
 
-	dec, err := start(s.ctx, DecodeArgs(Decoding{URL: s.u.String(), Info: info, Screen: s.screen, CAFile: caFileIf(), Insecure: insecure, Proxy: proxy}), true, s.sound)
+	dec, err := start(s.ctx, DecodeArgs(Decoding{URL: s.u.String(), AudioURL: s.req.AudioURL, Info: info, Screen: s.screen, Offset: s.offset, CAFile: caFileIf(), Insecure: insecure, Proxy: proxy}), true, s.sound)
 	if err != nil {
 		return err, false
 	}
@@ -200,6 +237,9 @@ func (s *session) play(insecure bool) (error, bool) {
 
 	if s.sound {
 		src := &soundSource{f: dec.audio, s: s, quit: make(chan struct{})}
+		if s.req.AudioURL != "" {
+			src.firstDone = make(chan struct{})
+		}
 		s.mu.Lock()
 		s.src = src
 		s.mu.Unlock()
@@ -209,6 +249,39 @@ func (s *session) play(insecure bool) (error, bool) {
 	if s.ctx.Err() != nil {
 		return nil, false
 	}
+	// A damaged frame is already a definitive failure; do not wait on a paused
+	// audio handover or hold the picture while waiting for the listener to resume.
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return readErr, false
+	}
+	// Drain the picture while the first PCM read runs: waiting before readFrames could deadlock
+	// the decoder on its full picture pipe. Do not declare success before that read finishes.
+	if s.req.AudioURL != "" {
+		select {
+		case <-s.src.firstDone:
+		case <-s.ctx.Done():
+		}
+	}
+	if s.ctx.Err() != nil {
+		return nil, false
+	}
+	s.mu.Lock()
+	silentTail, read := s.silentTail, s.read
+	s.mu.Unlock()
+	if silentTail || read == 0 {
+		// Zero-picture playback is never a paused final frame. Diagnose its decoder
+		// exit here as well; cancellation must still break a process/audio wait.
+		select {
+		case <-dec.done:
+		case <-s.ctx.Done():
+			return nil, false
+		}
+		if read == 0 || dec.err != nil {
+			return dec.why(), false
+		}
+	}
+	drain := time.NewTicker(50 * time.Millisecond)
+	defer drain.Stop()
 	// The picture has ended: what is left of it is shown, then the video is over.
 	for {
 		s.mu.Lock()
@@ -217,18 +290,34 @@ func (s *session) play(insecure bool) (error, bool) {
 		if gone {
 			return nil, false
 		}
-		if left == 0 {
+		// A decoder can exit while buffered picture is paused. Inspect err only
+		// after done closes, and do not wait here: active audio may still need the
+		// listener to resume before FFmpeg can finish writing its output.
+		select {
+		case <-dec.done:
+			if dec.err != nil {
+				return dec.why(), false
+			}
+		default:
+		}
+		// Presenting the final frame is not permission to finish a paused seek.
+		// Keep the browser lease until the listener resumes or explicitly stops.
+		if left == 0 && !s.paused() {
 			break
 		}
 		select {
 		case <-s.ctx.Done():
 			return nil, false
-		case <-time.After(50 * time.Millisecond):
+		case <-drain.C:
 		}
 	}
-	<-dec.done
+	select {
+	case <-dec.done:
+	case <-s.ctx.Done():
+		return nil, false
+	}
 	s.mu.Lock()
-	read := s.read
+	read = s.read
 	s.mu.Unlock()
 	switch {
 	case s.ctx.Err() != nil:
@@ -381,8 +470,17 @@ func (s *session) done(fr *Frame) {
 func (s *session) clock() time.Duration {
 	s.mu.Lock()
 	sound, soundIn := s.sound, s.soundIn
+	handed := s.src != nil && s.src.handedOver()
+	canceled := s.ctx.Err() != nil
 	s.mu.Unlock()
 	if sound && !soundIn {
+		// The previous decoder may still own the named Video track while this one loads.
+		// Its Heard counter is not this decoder's relative clock.
+		if !handed || canceled {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			return s.lastHeard
+		}
 		at, ok := media.Get().Heard(TrackName)
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -444,6 +542,13 @@ func (s *session) pausedLocked() bool {
 
 // setPaused pauses the video or carries it on.
 func (s *session) setPaused(on bool) {
+	// A canceled decoder must not pause/resume a later track also named Video.
+	// Match the handover lock order in soundSource.begin.
+	soundTurns.Lock()
+	defer soundTurns.Unlock()
+	if s.ctx.Err() != nil {
+		return
+	}
 	s.pauses.Lock()
 	s.mu.Lock()
 	soundClock := s.sound && !s.soundIn && s.src != nil && s.src.handedOver()
@@ -462,12 +567,8 @@ func (s *session) setPaused(on bool) {
 		}
 	}
 	s.mu.Unlock()
-	if soundClock && media.Get().Receiving() == TrackName {
-		if on {
-			media.Get().Pause()
-		} else {
-			media.Get().Resume()
-		}
+	if soundClock {
+		s.src.track.SetPaused(on)
 	}
 	s.pauses.Unlock()
 	s.changed()
@@ -486,9 +587,11 @@ func (s *session) numbers() (shown, dropped int, started bool) {
 // the picture can carry on and what was queued plays out, and tells the session when the track was
 // taken from it (Close from the media player: something else is playing).
 type soundSource struct {
-	f    *os.File
-	s    *session
-	quit chan struct{}
+	f         *os.File
+	s         *session
+	quit      chan struct{}
+	firstDone chan struct{}       // first read/track handover completed
+	track     media.ReceivedTrack // identity, never stop a later track merely called Video
 
 	mu      sync.Mutex
 	first   []byte
@@ -506,25 +609,56 @@ var soundTurns sync.Mutex
 
 // begin waits for the first of the sound, and plays it as a received track.
 func (a *soundSource) begin() {
+	if a.firstDone != nil {
+		defer close(a.firstDone)
+	}
 	buf := make([]byte, 16384)
 	n, err := a.f.Read(buf)
 	if err != nil || n == 0 {
+		if a.s.req.AudioURL != "" {
+			a.s.mu.Lock()
+			// The source must have supplied real PCM before this seek. Probe metadata
+			// alone is not validation, nor is a read error other than a clean pipe EOF.
+			tail := n == 0 && a.s.offset > 0 && a.s.audioValidated && errors.Is(err, io.EOF)
+			if a.s.ctx.Err() == nil {
+				if tail {
+					a.s.silentTail = true
+				} else {
+					a.s.soundErr = errors.New("the separate audio input ended before supplying sound")
+					a.s.cancel()
+					a.s.cond.Broadcast()
+				}
+			}
+			a.s.mu.Unlock()
+			if tail {
+				a.s.soundOut()
+			}
+			return
+		}
 		a.s.soundOut()
 		return
 	}
+	a.s.mu.Lock()
+	a.s.audioValidated = true
+	a.s.mu.Unlock()
 	// Starting the track and ending a session take turns (soundTurns), so a session stopped meanwhile
 	// either never starts its track or knows it has one to stop. Not under a.mu: the clock and the
 	// state read it, and they are not to wait on the media player starting a track.
 	soundTurns.Lock()
 	a.mu.Lock()
-	if a.ending {
+	if a.ending || a.s.ctx.Err() != nil {
 		a.mu.Unlock()
 		soundTurns.Unlock()
 		return
 	}
 	a.first, a.started = buf[:n], true
 	a.mu.Unlock()
-	media.Get().PlayReceived(TrackName, a, soundRate, soundChannels)
+	var accepted bool
+	a.track, accepted = a.s.audioLease.Play(TrackName, a, soundRate, soundChannels)
+	if !accepted {
+		soundTurns.Unlock()
+		return
+	}
 	media.Get().SetReceivedTrack(TrackName, a.s.req.Title, "", "")
 	// Paused before the sound came (covered while loading, or a pause from Home Assistant): the pause is
 	// the track's from now, since the sound is the clock. Handed over and taken off the wall clock under
@@ -537,10 +671,14 @@ func (a *soundSource) begin() {
 	a.handed = true
 	a.mu.Unlock()
 	held := a.s.wallPaused
-	a.s.wallPaused = false
+	// A short input can drain on the reader before handover finishes. In that case
+	// soundOut already transferred the pause to the wall clock; do not clear it.
+	if !a.s.soundIn {
+		a.s.wallPaused = false
+	}
 	a.s.mu.Unlock()
 	if held {
-		media.Get().Pause()
+		a.track.SetPaused(true)
 	}
 	a.s.pauses.Unlock()
 	soundTurns.Unlock()

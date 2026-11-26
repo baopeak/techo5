@@ -83,8 +83,15 @@ func colorsCard() cardView {
 	return v
 }
 
-// adaptRows is the Show's rows as they are: its card is wide enough for all of them.
-func adaptRows(rows []settingRow, _ sheetView) []settingRow { return rows }
+// adaptRows adds local applications only on the Show with a trusted launcher.
+func adaptRows(rows []settingRow, sv sheetView) []settingRow {
+	if sv.st.cat == catConnections && trustedLauncher(browserLauncher) == nil {
+		rows = append(rows,
+			settingRow{id: "appweb", label: "Web browser", sub: "Browse here · Vietnamese touch keyboard", kind: ctlButton, button: "Open"},
+			settingRow{id: "appyoutube", label: "YouTube", sub: "Watch on this screen", kind: ctlButton, button: "Open"})
+	}
+	return rows
+}
 
 // devicePicker is a list of the Show's own: themes, and the drawer's station lists.
 func devicePicker(id string, sv sheetView) (pickerView, bool) {
@@ -145,6 +152,13 @@ func (d *Display) deviceRowTap(id string, p part, opt int) bool {
 		return true
 	}
 	switch id {
+	case "appweb", "appyoutube":
+		d.showSheet(false)
+		kind := "web"
+		if id == "appyoutube" {
+			kind = "youtube"
+		}
+		d.appRequest(kind)
 	case "theme":
 		d.openPicker(id)
 	case "colors":

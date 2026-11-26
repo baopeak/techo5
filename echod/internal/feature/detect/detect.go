@@ -61,6 +61,28 @@ type Detect struct {
 
 	// ducker gets the music out of the way after an utterance that nearly fired; see nearmiss.go.
 	ducker *ducker
+
+	// muted is the microphones being cut, and screen the local browser's full screen asking for the
+	// CPU (HoldForScreen): the engines are down while either holds. Under holds.
+	holds         sync.Mutex
+	muted, screen bool
+}
+
+// quiet puts the engines down or up for what holds now. Under holds.
+func (d *Detect) quiet() { d.engine.Quiet(d.muted || d.screen) }
+
+// HoldForScreen takes the wake words down while the local browser shows a film full screen, and
+// brings them back after: openWakeWord alone takes most of a core, which the browser's software
+// decoding needs, and a turn would close the browser anyway. The full screen's own button ends it.
+func (d *Detect) HoldForScreen(on bool) {
+	d.holds.Lock()
+	defer d.holds.Unlock()
+	if on == d.screen {
+		return
+	}
+	d.screen = on
+	slog.Info("wake words held for the full-screen browser", "held", on)
+	d.quiet()
 }
 
 var (
@@ -207,7 +229,10 @@ func newDetect() *Detect {
 	// A cut microphone hands on silence, and running the models over it is work that cannot find
 	// anything. The engines go down with the microphones and come back with them.
 	mute.Get().Changed.Listen(func(muted bool) {
-		e.Quiet(muted)
+		d.holds.Lock()
+		d.muted = muted
+		d.quiet()
+		d.holds.Unlock()
 		// The stop word is spared while an alarm or timer rings: it has to stop when told, and the sound
 		// could otherwise hold it for as long as ten seconds. With nothing ringing it settles too, or
 		// the unmute sound could be heard as "stop" and cut itself short, and music with it.
@@ -233,7 +258,10 @@ func newDetect() *Detect {
 		// A device that was muted when it was switched off comes back muted, and the hook below only
 		// fires on a change, so the state has to be read once here as well.
 		if muted, err := mute.Get().Muted(); err == nil {
-			e.Quiet(muted)
+			d.holds.Lock()
+			d.muted = muted
+			d.quiet()
+			d.holds.Unlock()
 		}
 		return nil
 	}

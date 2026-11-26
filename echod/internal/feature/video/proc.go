@@ -222,6 +222,10 @@ const aidInet = 3003
 
 // probe asks ffmpeg what is at the address, kept off the device by proxy ("" for the kernel's fence).
 func probe(ctx context.Context, url string, insecure bool, proxy string) (Info, error) {
+	return probeMedia(ctx, url, insecure, proxy, false)
+}
+
+func probeMedia(ctx context.Context, url string, insecure bool, proxy string, audioOnly bool) (Info, error) {
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	d, err := start(ctx, ProbeArgs(url, caFileIf(), insecure, proxy), false, false)
@@ -232,7 +236,7 @@ func probe(ctx context.Context, url string, insecure bool, proxy string) (Info, 
 	if ctx.Err() != nil {
 		return Info{}, fmt.Errorf("nothing came from the address in %s", probeTimeout)
 	}
-	return ParseProbe(d.stderr.all())
+	return parseProbe(d.stderr.all(), audioOnly)
 }
 
 // probeTimeout is how long the address has to say what it is.

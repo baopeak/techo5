@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Screen is what the picture is made for: the canvas the daemon draws on (960×480 on the Show 5,
@@ -101,9 +102,12 @@ const protocols = "http,https,tcp,tls,hls,crypto"
 
 // Decoding is how the decoder is run: what to fetch and from where, and how.
 type Decoding struct {
-	URL    string
-	Info   Info
-	Screen Screen
+	URL      string
+	AudioURL string
+	Info     Info
+	Screen   Screen
+	// Offset is an accurate input seek, applied equally to both inputs. Output clocks start at zero.
+	Offset time.Duration
 
 	// CAFile is where the certificate authorities are, empty for OpenSSL's own default; Insecure
 	// stops certificates being checked (the device's own Insecure TLS setting).
@@ -204,15 +208,34 @@ func DecodeArgs(d Decoding) []string {
 	a = append(a, netArgs(d.URL, d.CAFile, d.Insecure, d.Proxy)...)
 	_, h := d.Info.Display()
 	t := threads(int(h))
-	// Past 720p every core, and best effort even so: the decoder's own shortcuts (skipping the
-	// deblocking) make ffmpeg 8 refuse to open the picture's output when given on its command line.
+	// Past 720p every core, and best effort even so.
 	a = append(a, "-threads", strconv.Itoa(t))
+	if d.Info.FPS > 30.5 {
+		// Shown at half its rate (FrameRate), so frames nothing references and the deblocking are
+		// work the panel never shows: 720p60 went from slower than real time to about 2.2x on a
+		// Show 8. Named for the video decoder only, since ffmpeg refuses a decoder option the sound
+		// decoder of the same input would be handed and cannot take.
+		a = append(a, "-skip_frame:v", "noref", "-skip_loop_filter:v", "all")
+	}
+	if d.Offset > 0 {
+		a = append(a, "-ss", strconv.FormatFloat(d.Offset.Seconds(), 'f', 6, 64))
+	}
 	a = append(a, "-i", d.URL)
+	audioInput := "0"
+	if d.AudioURL != "" {
+		a = append(a, "-max_pixels", maxPixels)
+		a = append(a, netArgs(d.AudioURL, d.CAFile, d.Insecure, d.Proxy)...)
+		if d.Offset > 0 {
+			a = append(a, "-ss", strconv.FormatFloat(d.Offset.Seconds(), 'f', 6, 64))
+		}
+		a = append(a, "-i", d.AudioURL)
+		audioInput = "1"
+	}
 	a = append(a, "-map", "0:v:"+strconv.Itoa(d.Info.VideoIndex), "-an", "-sn", "-dn",
 		"-vf", Filter(d.Info, d.Screen), "-fps_mode", "passthrough",
 		"-f", "rawvideo", "-pix_fmt", pixOr(d.Screen.PixFmt), "pipe:3")
 	if d.Info.AudioIndex >= 0 {
-		a = append(a, "-map", "0:a:"+strconv.Itoa(d.Info.AudioIndex), "-vn", "-sn", "-dn",
+		a = append(a, "-map", audioInput+":a:"+strconv.Itoa(d.Info.AudioIndex), "-vn", "-sn", "-dn",
 			"-af", soundFilter, "-ac", strconv.Itoa(soundChannels), "-ar", strconv.Itoa(soundRate),
 			"-f", "s16le", "pipe:1")
 	}

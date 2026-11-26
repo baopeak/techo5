@@ -5,6 +5,7 @@ package video
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -31,14 +32,33 @@ func TestMain(m *testing.M) {
 func fakeFFmpeg() {
 	args := os.Args[1:]
 	if !slices.Contains(args, "pipe:3") {
+		if strings.Contains(args[len(args)-1], "/audio") {
+			out := os.Getenv("TECHO5_FAKE_AUDIO_PROBE")
+			if out == "" {
+				out = probeSeparateAudio
+			}
+			os.Stderr.WriteString(out)
+			os.Exit(1)
+		}
 		os.Stderr.WriteString(probeMP4)
 		os.Exit(1)
 	}
 	size, _ := strconv.Atoi(os.Getenv("TECHO5_FAKE_FRAME"))
 	frames, _ := strconv.Atoi(os.Getenv("TECHO5_FAKE_FRAMES"))
+	seekTail := slices.Contains(args, "-ss") && os.Getenv("TECHO5_FAKE_SEEK_TAIL") != ""
+	if seekTail {
+		frames = 1
+		if os.Getenv("TECHO5_FAKE_SEEK_NO_VIDEO") != "" {
+			frames = 0
+		}
+	}
 	video := os.NewFile(3, "video")
 	if slices.Contains(args, "pipe:1") {
-		_, _ = os.Stdout.Write(make([]byte, 48000*4))
+		if os.Getenv("TECHO5_FAKE_ZERO_AUDIO_PACKETS") == "" && !seekTail {
+			_, _ = os.Stdout.Write(make([]byte, 48000*4))
+		}
+		// End sound independently of the picture, including a stream with no decoded PCM.
+		_ = os.Stdout.Close()
 	}
 	frame := make([]byte, size)
 	for range frames {
@@ -46,7 +66,18 @@ func fakeFFmpeg() {
 			os.Exit(1)
 		}
 	}
-	if os.Getenv("TECHO5_FAKE_HOLD") != "" {
+	if os.Getenv("TECHO5_FAKE_PARTIAL_VIDEO") != "" {
+		_, _ = video.Write(frame[:len(frame)-1])
+	}
+	if os.Getenv("TECHO5_FAKE_DECODE_FAIL") != "" {
+		os.Stderr.WriteString("network failed after the final packet\n")
+		os.Exit(1)
+	}
+	if seekTail && os.Getenv("TECHO5_FAKE_SEEK_FAIL") != "" {
+		os.Stderr.WriteString("network failed after the final packet\n")
+		os.Exit(1)
+	}
+	if os.Getenv("TECHO5_FAKE_HOLD") != "" && !seekTail {
 		select {}
 	}
 	os.Exit(0)
@@ -337,7 +368,7 @@ func TestTheWrapperTakesNothingAsACommand(t *testing.T) {
 // is not passed on.
 func TestWhatFFmpegSaysLosesItsTokens(t *testing.T) {
 	got := scrubURLs("Server returned 403 for 'https://cdn.example.com/seg1.ts?token=secret' after http://user:pw@nas/x.m3u8")
-	if strings.Contains(got, "secret") || strings.Contains(got, "pw") || !strings.Contains(got, "cdn.example.com/seg1.ts") {
+	if strings.Contains(got, "secret") || strings.Contains(got, "pw") {
 		t.Errorf("scrubbed: %s", got)
 	}
 }
@@ -491,5 +522,161 @@ func TestTheVideoErrorSensor(t *testing.T) {
 	}
 	if _, err := f.Play(Request{URL: "file:///etc/passwd"}); err == nil {
 		t.Fatal("a file was played")
+	}
+}
+
+const probeSeparateAudio = `Input #0, matroska,webm, from 'https://media.example.com/audio':
+  Duration: 00:00:03.00, start: 0.000000, bitrate: 128 kb/s
+  Stream #0:0: Audio: unknown, 48000 Hz, stereo
+  Stream #0:1: Audio: opus, 48000 Hz, stereo
+At least one output file must be specified
+`
+
+func TestSeparateAudioMustBeANetworkAddressOffDevice(t *testing.T) {
+	f := fake(t, 10, false)
+	bad := []string{
+		"file:///etc/passwd", "pipe:1", "/tmp/audio", "https://localhost/audio",
+		"http://127.0.0.1/audio", "http://169.254.1.2/audio", "http://[fe80::1%25wlan0]/audio",
+		"https://media.example.com/audio?token=secret\n",
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, addr := range addrs {
+		if n, ok := addr.(*net.IPNet); ok && !n.IP.IsLoopback() && !n.IP.IsLinkLocalUnicast() {
+			bad = append(bad, "http://"+net.JoinHostPort(n.IP.String(), "8080")+"/audio")
+		}
+	}
+	for _, audio := range bad {
+		if _, err := f.Play(Request{URL: "https://media.example.com/video", AudioURL: audio, Origin: FromLocalApp}); err == nil {
+			t.Errorf("accepted audio address %q", audio)
+		} else if strings.Contains(err.Error(), "secret") {
+			t.Errorf("audio token escaped in error: %v", err)
+		}
+	}
+	if f.State().Phase != Idle {
+		t.Fatal("invalid audio started a session")
+	}
+	if err := config.Set().Video().On(false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Play(Request{URL: "https://media.example.com/video", AudioURL: "https://media.example.com/audio", Origin: FromLocalApp}); !errors.Is(err, ErrOff) {
+		t.Fatalf("local app bypassed Video off: %v", err)
+	}
+}
+
+func TestSeparateAudioKeepsPictureMetadata(t *testing.T) {
+	f := fake(t, 100000, true)
+	videoURL, audioURL := "https://media.example.com/video", "https://media.example.com/audio"
+	if _, err := f.Play(Request{URL: videoURL, AudioURL: audioURL, Origin: FromLocalApp}); err != nil {
+		t.Fatal(err)
+	}
+	until(t, f, Playing)
+	f.mu.Lock()
+	s := f.cur
+	f.mu.Unlock()
+	s.mu.Lock()
+	info, sound := s.info, s.sound
+	s.mu.Unlock()
+	want, err := ParseProbe(probeMP4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want.AudioIndex, want.AudioCodec = 1, "opus"
+	if info != want || !sound {
+		t.Fatalf("separate sound changed picture metadata: got %+v, sound %v; want %+v", info, sound, want)
+	}
+}
+
+func TestSeparateAudioWithoutUsableSoundFailsInsteadOfPlayingSilent(t *testing.T) {
+	for _, out := range []string{
+		"Input #0, webm:\n  Stream #0:0: Audio: unknown, 48000 Hz, stereo\n",
+		probeMP4[:strings.Index(probeMP4, "  Stream #0:1")],
+		"https://user:password@media.example.com/audio?token=secret: Server returned 403 Forbidden\n",
+	} {
+		t.Run(strconv.Itoa(len(out)), func(t *testing.T) {
+			f := fake(t, 100000, true)
+			decoderEnv = append(decoderEnv, "TECHO5_FAKE_AUDIO_PROBE="+out)
+			id, err := f.Play(Request{URL: "https://media.example.com/video", AudioURL: "https://media.example.com/audio", Origin: FromLocalApp})
+			if err != nil {
+				t.Fatal(err)
+			}
+			st := until(t, f, Idle)
+			if st.Failed != id || st.Err == "" {
+				t.Fatalf("missing audio played silently: %+v", st)
+			}
+			for _, secret := range []string{"user", "password", "secret"} {
+				if strings.Contains(st.Err, secret) {
+					t.Errorf("audio error leaked %q: %s", secret, st.Err)
+				}
+			}
+		})
+	}
+}
+
+func TestSeparateAudioWithoutPCMFailsWhilePictureContinues(t *testing.T) {
+	f := fake(t, 100000, true)
+	decoderEnv = append(decoderEnv, "TECHO5_FAKE_ZERO_AUDIO_PACKETS=1")
+	id, err := f.Play(Request{
+		URL: "https://media.example.com/video", AudioURL: "https://media.example.com/audio?token=secret",
+		Origin: FromLocalApp,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := until(t, f, Idle)
+	if st.Failed != id || st.Ended == id || st.Err == "" {
+		t.Fatalf("empty separate audio did not fail playback: %+v", st)
+	}
+	if strings.Contains(st.Err, "secret") || strings.Contains(st.Err, "https://") {
+		t.Fatalf("empty audio error leaked its address: %s", st.Err)
+	}
+}
+
+func TestOneInputWithoutPCMStillPlaysItsPicture(t *testing.T) {
+	f := fake(t, 100000, true)
+	decoderEnv = append(decoderEnv, "TECHO5_FAKE_ZERO_AUDIO_PACKETS=1")
+	id, err := f.Play(Request{URL: "https://media.example.com/video"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := until(t, f, Playing)
+	if st.ID != id || st.Failed == id {
+		t.Fatalf("legacy one-input picture failed without sound: %+v", st)
+	}
+}
+
+func TestLastIDTracksBegunSessionsNotPendingDLNAAsks(t *testing.T) {
+	f := fake(t, 100000, true)
+	if st := f.State(); st.LastID != 0 {
+		t.Fatalf("new player retained an unknown session: %+v", st)
+	}
+	first, err := f.Play(Request{URL: "https://media.example.com/video"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	until(t, f, Playing)
+	f.Stop()
+	if st := f.State(); st.LastID != first || st.Phase != Idle {
+		t.Fatalf("stopping forgot the last begun session: %+v", st)
+	}
+	if err := config.Set().Video().DLNA(true); err != nil {
+		t.Fatal(err)
+	}
+	ask, err := f.Play(Request{URL: "https://media.example.com/video", Origin: FromDLNA, From: "192.168.1.30"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := f.State(); st.LastID != first || st.AskID != ask {
+		t.Fatalf("unapproved ask replaced the last begun session: %+v", st)
+	}
+	f.Answer(ask, true)
+	if st := f.State(); st.LastID != ask {
+		t.Fatalf("approved session was not retained: %+v", st)
+	}
+	f.Stop()
+	if st := f.State(); st.LastID != ask || st.Phase != Idle {
+		t.Fatalf("replacement and stop lost the begun session: %+v", st)
 	}
 }

@@ -1461,9 +1461,25 @@ func (p *Player) ours() {
 
 // PlayReceived plays audio a remote is sending (a phone using the device as a Bluetooth speaker) as a
 // track: it replaces what was playing, and a turn ducks or pauses it like anything else.
-func (p *Player) PlayReceived(name string, src PCMSource, rate, channels int) {
+// The returned handle stops only this session, including while held by a voice turn.
+func (p *Player) PlayReceived(name string, src PCMSource, rate, channels int) ReceivedTrack {
 	p.ours()
-	p.stream.PlayPCM(name, src, rate, channels)
+	return p.stream.PlayPCM(name, src, rate, channels)
+}
+
+// ReserveReceived records a PCM request before an asynchronous decoder starts.
+// Its lease cannot later steal the speaker from newer music or a Stop.
+func (p *Player) ReserveReceived() ReceivedLease {
+	p.ours()
+	m := p.stream
+	if m == nil {
+		return ReceivedLease{}
+	}
+	m.mu.Lock()
+	m.asks++
+	lease := ReceivedLease{stream: m, generation: m.asks}
+	m.mu.Unlock()
+	return lease
 }
 
 // Receiving names what is being played from a remote, empty when nothing is.

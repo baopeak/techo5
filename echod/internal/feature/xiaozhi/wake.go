@@ -189,6 +189,7 @@ func (f *Feature) Listening() bool {
 // reason. The listen is still closed properly: that is closeTurn's, and it is the half that tells
 // the server the utterance is over.
 func (f *Feature) Cancel() {
+	cancellationGeneration.Add(1)
 	f.mu.Lock()
 	t := f.turn
 	f.mu.Unlock()
@@ -304,6 +305,9 @@ func (f *Feature) Wake() error {
 	} else if live != nil {
 		return errors.New("a turn is already open; the wake word is part of the sentence")
 	}
+	// An accepted explicit wake supersedes actions from the previous answer.
+	// A duplicate wake inside the same capture returns above and changes nothing.
+	cancellationGeneration.Add(1)
 	return f.listen(wakeMode(), wakeTailSkip, 0)
 }
 
@@ -325,6 +329,11 @@ func OnAnswered(fn func()) {
 // FollowUp opens a turn for d with no wake word behind it, using the same
 // end-of-speech setting as a wake turn. Hearing nothing within d ends it.
 func (f *Feature) FollowUp(d time.Duration) error {
+	followUpOpening.Add(1)
+	defer followUpOpening.Add(-1)
+	if appHandoffPending.Load() {
+		return errors.New("an accepted screen action replaces this automatic follow-up")
+	}
 	if f.conversationEnded.Load() {
 		return errConversationEnded
 	}
@@ -341,9 +350,10 @@ func (f *Feature) FollowUp(d time.Duration) error {
 	// STT may have closed the conversation while this turn was opening.
 	// Recheck under the same lock used by STT and explicit turn installation.
 	f.mu.Lock()
+	handoff := appHandoffPending.Load()
 	ended := f.conversationEnded.Load()
 	var closing *turn
-	if t := f.turn; ended && t != nil && t.followUp {
+	if t := f.turn; (ended || handoff) && t != nil && t.followUp {
 		closing = t
 		t.cancel()
 	}
@@ -353,6 +363,9 @@ func (f *Feature) FollowUp(d time.Duration) error {
 	}
 	if ended {
 		return errConversationEnded
+	}
+	if handoff {
+		return errors.New("an accepted screen action replaces this automatic follow-up")
 	}
 	return nil
 }
